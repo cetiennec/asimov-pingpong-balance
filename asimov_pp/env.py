@@ -31,11 +31,14 @@ import numpy as np
 
 from asimov_pp.model import ARM_JOINTS, BALL_R, BLADE_HT, BLADE_R, STAND_HEIGHT, build
 
-HOME_Q = np.array([0.6736, 0.4992, -0.5901, -1.0606, -1.6396])  # from asimov_pp/find_home.py: blade at (0.33, -0.20, 0.80) m
+HOME_Q = np.array([0.6736, 0.4992, -0.5901, -1.0606, -1.6396])  # blade at (0.33, -0.20, 0.80) m (IK on the arm model)
 # Albert: blade 5 cm further forward and 8 cm higher, (0.38, -0.20, 0.88) m, so the head camera sees all of it
 HOME_ALBERT = np.array([1.1617, 0.5536, -1.0749, -0.8447, -1.2251])
 HOMES = {"default": HOME_Q, "albert": HOME_ALBERT}
-WALK_CLIP = Path(__file__).resolve().parent.parent.parent / "supermimic_ws" / "supermimic" / "motions" / "npz" / "menlo_walk.npz"
+# Menlo's recorded walk (in https://github.com/HybridRobotics/supermimic), only for the walking stage; SUPERMIMIC_DIR overrides
+import os as _os
+WALK_CLIP = Path(_os.environ.get("SUPERMIMIC_DIR", Path(__file__).resolve().parent.parent.parent / "supermimic_ws" / "supermimic")) \
+    / "motions" / "npz" / "menlo_walk.npz"
 DT = 0.02          # 50 Hz control
 N_SUB = 10         # 2 ms physics
 G = 9.81

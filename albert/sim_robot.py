@@ -20,6 +20,9 @@ from asimov_pp.model import ARM_JOINTS, BALL_R, BLADE_HT, build, standing_qpos
 from pathlib import Path
 
 ARM_DYN_FILE = Path(__file__).resolve().parent / "arm_dynamics.json"
+SIM_CAMERA_FILE = Path(__file__).resolve().parent / "sim_camera.json"
+# body lean of the simulated Albert on its gantry (IMU gravity, body frame): Albert's of 2026-11-19, what the policies train with
+SIM_STAND_GRAVITY = (0.1214, 0.0081, -0.9929)
 CAM_W, CAM_H, CAM_FOVY = 640, 360, 70.0
 CAM_FPS, CAM_LATENCY_S = 22.0, 0.105  # as measured on Albert (measure_latency.py)
 TRUE_CAM_POS = np.array([0.099, 0.004, 0.048])  # in neck_pitch_link, on the face
@@ -41,7 +44,8 @@ class _Frame:
 
 class SimAlbert:
     def __init__(self, seed=0, cam_latency_s=CAM_LATENCY_S, cmd_delay_steps=None, arm_dyn=True):
-        from albert.common import HOME, TAUGHT_GRAVITY
+        from albert.common import HOME
+        TAUGHT_GRAVITY = SIM_STAND_GRAVITY  # fixed: the sim does not follow the robot's latest teaching
         # Albert's arm as identified from a real session (tools/sysid_arm.py): gains, damping, friction and a 34 ms command delay.
         # Without that file: nominal gains and a 60 ms delay (Albert's arm lagged 50-65 ms more than the nominal sim's).
         dyn = ARM_DYN_FILE if (arm_dyn and ARM_DYN_FILE.exists()) else None
@@ -60,7 +64,9 @@ class SimAlbert:
         self.rm.vis.global_.fovy = CAM_FOVY
         # if Albert's head camera has been calibrated, render the simulated one from it (position, direction, field of view)
         self.cam_pos_head, self.cam_dir_head = TRUE_CAM_POS, np.array([np.cos(TRUE_CAM_PITCH_DOWN), 0, -np.sin(TRUE_CAM_PITCH_DOWN)])
-        from albert.common import CALIB_FILE
+        # the simulated head camera: a fixed mount (albert/sim_camera.json, Albert's calibration of 2026-11-19), so the sim does not
+        # change when the real robot is recalibrated, and runs without any robot
+        CALIB_FILE = SIM_CAMERA_FILE
         if CALIB_FILE.exists():
             import json
             from scipy.spatial.transform import Rotation

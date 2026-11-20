@@ -74,7 +74,7 @@ action = policy(obs)                                       # obs: 40 floats -> 5
 | | |
 |---|---|
 | `asimov_pp/` | MuJoCo model builder, environment (curriculum, domain randomization, camera model), Kalman predictor, PPO |
-| `albert/` | the real robot through menlo-sdk: `run_policy.py`, calibrations (camera, arm offsets, latency), free-standing (`stand_test.py`, `sim_freestand.py`), simulated robots, safety (`common.py`). Guides: `albert/MORNING.md`, `albert/ONBOARD.md` |
+| `albert/` | the real robot through menlo-sdk: `run_policy.py`, calibrations (camera, arm offsets, latency), free-standing (`stand_test.py`, `sim_freestand.py`), simulated robots, safety (`common.py`). Guides: `albert/README.md`, `albert/ONBOARD.md` |
 | `tools/` | arm system identification, predictor tuning, session statistics, robot-matched evaluation, a mock robot that runs the real-robot code paths |
 | `hardware/` | paddle holder (`paddle_holder.py` → `.stl`; v5 follows the flared handle, has a flat print face and no sharp inside corners; v4 kept) |
 | `data/` | run logs of the sessions on Albert (CSV at 50 Hz: ball estimate, arm, actions; `*_frames.csv`: every camera detection) |
@@ -93,7 +93,7 @@ uv run python -m albert.run_policy --sim --freestand --truth-ball      # standin
 uv run python -m tools.eval_albert outputs/albert_v3_final/best.pt     # robot-matched sim evaluation
 ```
 
-On the robot: `albert/MORNING.md` (gantry, then free-standing step by step), `albert/ONBOARD.md` (running on Albert's Pi).
+On the robot: `albert/README.md` (calibrations, gantry, free-standing), `albert/ONBOARD.md` (running on Albert's Pi).
 
 ## Limitations
 

@@ -21,7 +21,11 @@ import mujoco
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
-ASIMOV_XML = ROOT.parent / "supermimic_ws" / "asimov-1" / "sim-model" / "asimov_1_25dof" / "xml" / "asimov_1_25dof.xml"
+# Menlo's Asimov 1 model (https://github.com/menloresearch/asimov-1, GPL-2 / CERN-OHL-S): tools/get_asimov_model.sh fetches it.
+# ASIMOV_DIR points at the asimov-1 checkout; default: ../supermimic_ws/asimov-1 next to this repository.
+import os as _os
+ASIMOV_DIR = Path(_os.environ.get("ASIMOV_DIR", ROOT.parent / "supermimic_ws" / "asimov-1"))
+ASIMOV_XML = ASIMOV_DIR / "sim-model" / "asimov_1_25dof" / "xml" / "asimov_1_25dof.xml"
 HOLDER_STL = ROOT / "hardware" / "paddle_holder.stl"
 CUP_STL = ROOT / "assets" / "ASV1_300_12B_wristframe.stl"  # mm, right_wrist_yaw_link frame
 
@@ -63,7 +67,7 @@ BLADE_R = 0.076           # blade modelled as a disc (ITTF blades are ~150 x 158
 BLADE_HT = 0.005          # half thickness: 6 mm wood + 2 x 2 mm rubber
 HANDLE_X0 = HOLDER_LEN - HANDLE_IN  # handle butt against the holder's stop, 8 mm in front of the cup rim
 BLADE_X = HANDLE_X0 + HANDLE_LEN + BLADE_R - 0.012  # the blade overlaps the handle end by 12 mm
-PADDLE_ROLL_DEG = 135.0   # cradle rotation about the forearm axis (chosen so that home wrist yaw is mid-range, see find_home.py)
+PADDLE_ROLL_DEG = 135.0   # cradle rotation about the forearm axis (chosen so that home wrist yaw is mid-range)
 
 BALL_R, BALL_M = 0.020, 0.0027
 
@@ -80,9 +84,13 @@ def _paddle(spec: mujoco.MjSpec, light: bool, roll_deg: float):
     wrist.add_geom(name="cup_collision", type=mujoco.mjtGeom.mjGEOM_CYLINDER, size=[0.0188, 0.0097, 0], pos=[0.0052, 0, 0],
                    quat=[0.7071068, 0, 0.7071068, 0], rgba=[0.2, 0.6, 0.2, 0.3], group=3, contype=2, conaffinity=0, density=0)
     if not light:
-        spec.add_mesh(name="cup_mesh", file=str(CUP_STL), scale=[1e-3] * 3)
-        wrist.add_geom(name="cup_visual", type=mujoco.mjtGeom.mjGEOM_MESH, meshname="cup_mesh", rgba=[0.62, 0.62, 0.65, 1],
-                       contype=0, conaffinity=0, group=2, density=0)
+        if CUP_STL.exists():
+            spec.add_mesh(name="cup_mesh", file=str(CUP_STL), scale=[1e-3] * 3)
+            wrist.add_geom(name="cup_visual", type=mujoco.mjtGeom.mjGEOM_MESH, meshname="cup_mesh", rgba=[0.62, 0.62, 0.65, 1],
+                           contype=0, conaffinity=0, group=2, density=0)
+        else:  # the cup mesh (made from Menlo's CAD) is not distributed: a cylinder of its size stands in (visual only)
+            wrist.add_geom(name="cup_visual", type=mujoco.mjtGeom.mjGEOM_CYLINDER, size=[0.0188, 0.013], pos=[TIP_X - 0.013, 0, 0],
+                           quat=[0.7071068, 0, 0.7071068, 0], rgba=[0.62, 0.62, 0.65, 1], contype=0, conaffinity=0, group=2, density=0)
     tip = wrist.add_body(name="paddle_holder", pos=[TIP_X, 0, 0])
     # holder (hardware/paddle_holder.py): plug in the cup + flange on the rim, ~45 g printed + 4 M4 screws
     tip.add_geom(name="holder_flange_collision", type=mujoco.mjtGeom.mjGEOM_CYLINDER, size=[0.019, 0.0025, 0], pos=[0.0025, 0, 0],

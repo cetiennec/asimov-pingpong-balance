@@ -18,7 +18,8 @@ FREE_GRAVITY = (0.203, -0.011, -0.980)  # Albert's IMU, free-standing in the cen
 
 def episode(args):
     ckpt, stage, seed, realistic, grav = args
-    from albert.common import HOME, TAUGHT_GRAVITY
+    from albert.common import HOME
+    from albert.sim_robot import SIM_STAND_GRAVITY as TAUGHT_GRAVITY  # fixed gantry lean: results stay comparable over time
     from asimov_pp.env import BalanceEnv
     from asimov_pp.ppo import load_policy
     pol = load_policy(ckpt)

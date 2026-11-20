@@ -17,7 +17,7 @@ Frame of this file (= sim body "paddle_holder"): right_wrist_yaw_link frame move
 v5 (2026-11-20): the lips follow the handle's flared shape (HANDLE_PROFILE, 0.6 mm clearance), so the handle bears along its
 length instead of only at the butt. No sharp inside corners (they crack): 45 deg chamfers at the lip roots, rounds at the
 handle stop and the stop / flange step, round-ended zip-tie slots with >= 3 mm of wall outside, round-bottomed tie grooves. A flat face opposite the paddle: the flange is cut flush with the
-underside of the cradle plate, so the part lies flat on it. v4: hardware/paddle_holder_v4.{py,stl}.
+underside of the cradle plate, so the part lies flat on it. v4 is in the git history.
 
 Print: PETG / PLA+ / PA12, lying on the flat face (cradle plate down, paddle side up): no supports under the cradle, layers along
 its length (strongest way for the paddle's bending). 6 walls or 100 % infill. The plug's 4 radial holes print horizontally.

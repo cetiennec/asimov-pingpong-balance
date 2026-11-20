@@ -1,0 +1,15 @@
+{
+ "best": {
+  "accel_noise": 1.5,
+  "meas_noise": 0.004,
+  "damping": 1.0,
+  "gate": 3.0,
+  "huber": null,
+  "roll_gain": 0.75,
+  "reset_after": 3,
+  "bias_noise": null,
+  "bias_init": 0.07
+ },
+ "score_mm": 21.17198020924903,
+ "source": "data/2026-11-20/M3_v3_gantry.csv"
+}

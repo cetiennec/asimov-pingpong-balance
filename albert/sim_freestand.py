@@ -134,7 +134,7 @@ class FreeStandAlbert(SimAlbert):
         # the head camera is Albert's calibrated one, with its full orientation (it rolls with the head)
         import json
         from scipy.spatial.transform import Rotation
-        from albert.common import CALIB_FILE
+        from albert.sim_robot import SIM_CAMERA_FILE as CALIB_FILE  # the fixed simulated mount (see sim_robot.py)
         j = json.loads(CALIB_FILE.read_text()); p = np.array(j["params"])
         self.cam_pos_head, self.cam_R_head = p[3:6], Rotation.from_rotvec(p[:3]).as_matrix()  # columns: right, down, forward
         m.vis.global_.fovy = float(np.degrees(2 * np.arctan(j["height"] / 2 / p[6])))
@@ -282,7 +282,7 @@ class FreeStandAlbert(SimAlbert):
     def exact_calibration(self, calib):
         """The head camera this sim renders (Albert's calibration, at the sim's image size)."""
         import json
-        from albert.common import CALIB_FILE
+        from albert.sim_robot import SIM_CAMERA_FILE as CALIB_FILE
         j = json.loads(CALIB_FILE.read_text()); p = list(j["params"]); p[6] *= CAM_H / j["height"]
         return {**calib, "width": CAM_W, "height": CAM_H, "params": p}
 
