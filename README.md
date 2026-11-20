@@ -30,7 +30,8 @@ real Asimov 1 ("Albert"), on its gantry and **standing on its own feet without t
 ## How it works
 
 ```
-head camera (1280x720, 22 fps) --> ball detector (white ball on the red blade, searched only around the blade)
+head camera (1280x720, 22 fps) --> ball detector (white ball on the red blade, searched only around the blade; a ball merged
+                                         |  with a bright background is split off; expected size and predicted position checked)
                                          |  ray from the calibrated camera, intersected with the blade plane (arm model + IMU)
 joints + IMU (200 Hz) ----> arm model --> Kalman predictor: replays each frame at its capture time (~105 ms old), predicts
                                          |  the ball NOW from the blade tilt, down-weights outliers, learns the blade's flat error

@@ -41,6 +41,7 @@ def masks(rgb, ball=BALL_WHITE, step=2):
     else:
         col = (h >= ball["hue"][0]) & (h <= ball["hue"][1]) & (sat >= ball["min_sat"]) & (val >= ball["min_val"])
     masks.red = red  # kept for detect(): is a candidate surrounded by red rubber?
+    masks.val = val  # and its brightness, to split a ball merged with a bright background
     lab, n = ndimage.label(red)
     if n == 0:
         return np.zeros_like(red), col, np.zeros_like(red)
@@ -55,33 +56,84 @@ def masks(rgb, ball=BALL_WHITE, step=2):
     return ndimage.binary_dilation(blade, iterations=grow), col, core
 
 
-def detect(rgb, ball=BALL_WHITE, min_area=12, step=2, min_red_ring=0.35):
-    """The ball on the paddle: the largest round blob of the ball's colour inside the blade region of the image (keep anything
-    else white, a screen, a sheet of paper, out of the area right around the paddle).
+def _otsu(v, bins=32):
+    """Threshold splitting v into two classes with the largest between-class variance."""
+    hist, edges = np.histogram(v, bins=bins, range=(float(v.min()), float(v.max()) + 1e-6))
+    w = np.cumsum(hist).astype(float); mu = np.cumsum(hist * (edges[:-1] + edges[1:]) / 2)
+    tot, mt = w[-1], mu[-1]
+    w1 = tot - w
+    ok = (w > 0) & (w1 > 0)
+    between = np.where(ok, (mt * w / tot - mu) ** 2 / np.maximum(w * w1, 1e-9), 0)
+    return edges[int(np.argmax(between)) + 1]
+
+
+def _ball_like(pix, step, min_area, min_red_ring, r_px):
+    """One blob (bool mask on the step grid) -> (x, y, radius, area) in full-resolution pixels if it looks like the ball on the
+    blade: big enough, round and filled like a disc, of the expected size (r_px, if known) and surrounded by red rubber."""
+    ys, xs = np.nonzero(pix)
+    area = float(len(xs))
+    if area * step**2 < min_area:
+        return None
+    hh, ww = ys.max() - ys.min() + 1, xs.max() - xs.min() + 1
+    if not (0.5 < hh / ww < 2.0) or area / (hh * ww) < 0.5:
+        return None  # elongated or not filled like a disc
+    cy, cx, rr = ys.mean(), xs.mean(), max(1.5, np.sqrt(area / np.pi))
+    if r_px is not None and not (0.5 <= rr * step / r_px <= 1.7):
+        return None  # not the ball's size where the blade is (a highlight, a patch of background)
+    # a ball on the blade is surrounded by red rubber; a screen or a hand behind the blade's edge is not
+    red = masks.red
+    R = int(np.ceil(2.2 * rr)) + 1
+    y0, y1, x0, x1 = max(0, int(cy) - R), min(red.shape[0], int(cy) + R + 1), max(0, int(cx) - R), min(red.shape[1], int(cx) + R + 1)
+    Y, X = np.ogrid[y0:y1, x0:x1]
+    d2 = (Y - cy) ** 2 + (X - cx) ** 2
+    ring = (d2 >= (1.4 * rr) ** 2) & (d2 <= (2.2 * rr) ** 2)
+    if ring.sum() and red[y0:y1, x0:x1][ring].mean() < min_red_ring:
+        return None
+    return float(cx * step + step / 2), float(cy * step + step / 2), float(rr * step), area
+
+
+def detect(rgb, ball=BALL_WHITE, min_area=12, step=2, min_red_ring=0.35, r_px=None, expect=None, gate_px=None):
+    """The ball on the paddle: a round blob of the ball's colour inside the blade region of the image (keep anything else white,
+    a screen, a sheet of paper, out of the area right around the paddle).
     Returns (x, y, radius) in full-resolution pixels, or None. Searching only on the red blade keeps Albert's white shell,
-    the hand and the background out; small specular highlights on the rubber are rejected by size and shape."""
+    the hand and the background out; small specular highlights on the rubber are rejected by size and shape.
+    A blob that fails because the ball merged with a bright background behind the blade's edge (a lamp, a neon sign:
+    2026-11-20 M3) is split by brightness and its parts tested again.
+    Optional hints from the robot: r_px, the ball's expected radius in pixels where the blade is (camera model); expect, the
+    pixel where the predictor expects the ball: then the ball-like blob nearest to it (within gate_px) wins, not the largest."""
     if np.asarray(rgb).size == 0:
         return None
     blade, col, core = masks(rgb, ball, step)
     cand = ndimage.binary_opening(col & blade)
     lab, n = ndimage.label(cand)
-    best = None
+    found = []
     for k, sl in enumerate(ndimage.find_objects(lab), start=1):
-        area = float((lab[sl] == k).sum())
-        hh, ww = sl[0].stop - sl[0].start, sl[1].stop - sl[1].start
-        if area * step**2 < min_area or not (0.5 < hh / ww < 2.0) or area / (hh * ww) < 0.5:
-            continue  # too small, elongated or not filled like a disc
-        yy, xx = np.nonzero(lab[sl] == k)
-        x, y = (xx.mean() + sl[1].start) * step + step / 2, (yy.mean() + sl[0].start) * step + step / 2
-        # a ball on the blade is surrounded by red rubber; a screen or a hand behind the blade's edge is not
-        cy, cx, rr = yy.mean() + sl[0].start, xx.mean() + sl[1].start, max(1.5, np.sqrt(area / np.pi))
-        Y, X = np.ogrid[:masks.red.shape[0], :masks.red.shape[1]]
-        ring = ((Y - cy) ** 2 + (X - cx) ** 2 >= (1.4 * rr) ** 2) & ((Y - cy) ** 2 + (X - cx) ** 2 <= (2.2 * rr) ** 2)
-        if ring.sum() and masks.red[ring].mean() < min_red_ring:
+        pix = np.zeros_like(cand); pix[sl] = lab[sl] == k
+        hit = _ball_like(pix, step, min_area, min_red_ring, r_px)
+        if hit is not None:
+            found.append(hit)
             continue
-        if best is None or area > best[3]:
-            best = (float(x), float(y), float(np.sqrt(area / np.pi) * step), area)
-    return None if best is None else best[:3]
+        v = masks.val[pix]
+        if len(v) * step**2 < 4 * min_area or v.max() - v.min() < 0.2:
+            continue
+        thr = _otsu(v)
+        if v[v >= thr].mean() - v[v < thr].mean() < 0.15:
+            continue  # one brightness: nothing to split
+        for part in (pix & (masks.val < thr), pix & (masks.val >= thr)):
+            plab, pn = ndimage.label(ndimage.binary_opening(part))
+            for j, psl in enumerate(ndimage.find_objects(plab), start=1):
+                q = np.zeros_like(cand); q[psl] = plab[psl] == j
+                hit = _ball_like(q, step, min_area, min_red_ring, r_px)
+                if hit is not None:
+                    found.append(hit)
+    if not found:
+        return None
+    if expect is not None:
+        gate = gate_px if gate_px is not None else (3.0 * r_px if r_px else 60.0)
+        dist = [np.hypot(f[0] - expect[0], f[1] - expect[1]) for f in found]
+        if min(dist) <= gate:
+            return found[int(np.argmin(dist))][:3]
+    return max(found, key=lambda f: f[3])[:3]
 
 
 def debug_image(rgb, ball=BALL_WHITE, step=2):
@@ -196,6 +248,8 @@ def detect_roi(rgb, ball, roi, **kw):
             roi = None
     if roi is None:
         return detect(rgb, ball, **kw)
+    if kw.get("expect") is not None:
+        kw = dict(kw, expect=(kw["expect"][0] - x0, kw["expect"][1] - y0))
     det = detect(rgb[y0:y1, x0:x1], ball, **kw)
     return None if det is None else (det[0] + x0, det[1] + y0, det[2])
 

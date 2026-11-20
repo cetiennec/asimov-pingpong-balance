@@ -36,7 +36,7 @@ from albert.ball_camera import CameraModel, ball_on_blade_cov, blade_roi, debug_
 from albert.common import TAUGHT_GRAVITY, TiltGuard, lean_deg, level_dq, look_at  # noqa: F401
 from albert.common import (graceful_signals, CENTRED_STANCE, STALL_S, allow_link_hiccups, state_age, unique_log, to_balance, take_joints, hand_back, BalanceOnExit, safe_pose, FLAT_HOME_FW, HOME, TiltGuard, ACTION_SCALE, ARM_IDX, ARM_SIGN, CAMERA_LATENCY_S, KD, KP, NECK_PITCH, NECK_PITCH_IDX, NECK_YAW, NECK_YAW_IDX,
                            PERIOD, WAIST_IDX, Kinematics, ObsBuilder, fw_to_mjcf, load_calibration, mjcf_to_fw)
-from asimov_pp.model import ARM_JOINTS, BLADE_R, BALL_R
+from asimov_pp.model import ARM_JOINTS, BLADE_HT, BLADE_R, BALL_R
 from asimov_pp.ppo import load_policy
 
 LOST_AFTER_S = 0.5
@@ -88,6 +88,9 @@ def main():
                    "head's forward axis, as in the earlier sessions)")
     p.add_argument("--roi", action=argparse.BooleanOptionalAction, default=True,
                    help="search the ball only around where the arm model puts the blade (--no-roi: the whole frame)")
+    p.add_argument("--det-hints", action=argparse.BooleanOptionalAction, default=True,
+                   help="tell the detector the ball's expected size (camera model) and where the predictor expects it "
+                        "(--no-det-hints: the 2026-11-20 detector, largest ball-like blob)")
     p.add_argument("--level-start", action=argparse.BooleanOptionalAction, default=True,
                    help="level the blade for the body's actual lean before balancing (--no-level-start: the taught pose as is)")
     p.add_argument("--gantry", action="store_true", help="Albert stays hanging from the taut rope (no lowering prompt; tilt limits "
@@ -268,7 +271,7 @@ def _session(a, robot, calib, cam, ball, policy, kin, kin_cam, obs_b, gains, q_l
                 time.sleep(0)  # let the 50 Hz control loop run between the heavy steps
                 t_d = time.perf_counter()
                 roi = blade_roi(cam, *kin_cam.head_pose(), *kin_cam.blade_frame(), BLADE_R + 0.04, step=4) if a.roi else None
-                det = detect_roi(img, ball, roi, step=4)
+                det = detect_roi(img, ball, roi, step=4, **det_hints())
                 det_times.append(time.perf_counter() - t_d)
                 time.sleep(0)
                 uw, Rz = (None, None) if det is None else ball_on_blade_cov(cam, det[:2], *kin_cam.head_pose(), *kin_cam.blade_frame())
@@ -278,6 +281,27 @@ def _session(a, robot, calib, cam, ball, policy, kin, kin_cam, obs_b, gains, q_l
                     rec.add(img, f.received_at, t_cap)
                 if a.debug_video and len(dbg) < 22 * 300:  # keep what the detector saw (frame | masks), up to 5 min
                     dbg.append((debug_image(img, ball, step=4), uw, t_cap))
+
+        def det_hints():
+            """For the frame being detected (kin_cam at its capture pose): the ball's expected radius in pixels, and the pixel
+            where the predictor puts the ball at the capture time. {} without --det-hints."""
+            if not a.det_hints:
+                return {}
+            hp, hR = kin_cam.head_pose(); b_c, b_R = kin_cam.blade_frame()
+            _, depth = cam.project(b_c, hp, hR)
+            if not depth > 0.05:
+                return {}
+            hints = dict(r_px=float(cam.p[6] * BALL_R / depth))
+            try:
+                x = obs_b.kf.state()
+            except (TypeError, IndexError):  # reset by the control loop at that very moment
+                x = None
+            if x is not None:  # the predictor's ball now, taken back to the capture time (a hint only: a race is harmless)
+                u, w = x[0] - x[2] * a.cam_latency, x[1] - x[3] * a.cam_latency
+                px, z = cam.project(b_c + b_R @ np.array([u, w, BLADE_HT + BALL_R]), hp, hR)
+                if z > 0.05 and np.all(np.isfinite(px)):
+                    hints["expect"] = (float(px[0]), float(px[1]))
+            return hints
 
         def ball_estimate():
             """Latest result of the detector thread: (u, w) or None, the frame, its capture time."""
@@ -294,7 +318,7 @@ def _session(a, robot, calib, cam, ball, policy, kin, kin_cam, obs_b, gains, q_l
                     if rec:
                         rec.add(img, f.received_at, t_cap)
                     roi = blade_roi(cam, *kin_cam.head_pose(), *kin_cam.blade_frame(), BLADE_R + 0.04, step=3) if a.roi else None
-                    det = detect_roi(img, ball, roi, step=3)
+                    det = detect_roi(img, ball, roi, step=3, **det_hints())
                     det_times.append(time.perf_counter() - t_d)
                     uw, Rz = (None, None) if det is None else ball_on_blade_cov(cam, det[:2], *kin_cam.head_pose(), *kin_cam.blade_frame())
                     det_out.update(uw=uw, R=Rz, t_cap=t_cap, frame=f)
