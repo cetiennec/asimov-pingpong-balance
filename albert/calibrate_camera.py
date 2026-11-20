@@ -121,12 +121,20 @@ def _main():
         print("done: Albert is under Menlo's balance controller")
 
 
-def robust_fit(width, height, samples, truth, min_keep=7):
+def load_lens(sim=False):
+    """Albert's lens calibration (albert/calibrate_lens.py), or None: the simulated camera is an ideal pinhole."""
+    f = ROOT / "camera_intrinsics.json"
+    if sim or not f.exists():
+        return None
+    return json.loads(f.read_text())
+
+
+def robust_fit(width, height, samples, truth, min_keep=7, lens=None):
     """Fit the camera; while one spot is far off the others (> 3x the median error and > 6 mm: the ball rolled, a hand, the
     wrong spot), drop it and refit, keeping at least min_keep spots. Prints every spot's error."""
     samples, truth = list(samples), list(truth)
     while True:
-        cam = CameraModel(width, height)
+        cam = CameraModel(width, height, lens=lens)
         mean_px, max_px = cam.fit(samples)
         errs = []
         for (px, _, _, _), (u, w, bc, bR, hp, hR) in zip(samples, truth):
@@ -150,13 +158,20 @@ def refit(path):
     for sp in j["spots"]:
         hp, hR, bc, bR = (np.array(sp[k]) for k in ("hp", "hR", "bc", "bR"))
         samples.append((np.array(sp["px"]), np.array(sp["P"]), hp, hR)); truth.append((sp["u"], sp["w"], bc, bR, hp, hR))
-    cam, mean_px, max_px, errs, samples, truth = robust_fit(j["width"], j["height"], samples, truth)
+    sim = "_sim" in Path(path).name  # simulated spots never touch Albert's calibration
+    lens = load_lens(sim)
+    cam, mean_px, max_px, errs, samples, truth = robust_fit(j["width"], j["height"], samples, truth, lens=lens)
     ok = np.mean(errs) <= 10.0
-    target = CALIB_FILE_SIM if "_sim" in Path(path).name else CALIB_FILE  # simulated spots never touch Albert's calibration
+    target = CALIB_FILE_SIM if sim else CALIB_FILE
     out = target if ok else target.with_name(target.stem + "_rejected.json")
-    out.write_text(json.dumps(dict(cam.to_json(), ball=BALL_WHITE, level_deg=None, reproj_px=[mean_px, max_px],
-                                   spot_err_mm=float(np.mean(errs))), indent=1))
-    print(f"refit on {len(samples)} spots: {np.mean(errs):.1f} mm mean, {np.max(errs):.1f} mm max -> {out}")
+    prev = json.loads(target.read_text()) if target.exists() else {}
+    if ok and target.exists() and not sim:  # the calibration it replaces
+        hist = ROOT / "calibration_history"; hist.mkdir(exist_ok=True)
+        (hist / f"camera_calibration_{time.strftime('%Y%m%d_%H%M%S')}.json").write_text(target.read_text())
+    out.write_text(json.dumps(dict(cam.to_json(), ball=prev.get("ball", BALL_WHITE), level_deg=prev.get("level_deg"),
+                                   reproj_px=[mean_px, max_px], spot_err_mm=float(np.mean(errs)), spots=Path(path).name), indent=1))
+    print(f"refit on {len(samples)} spots{' with the lens calibration' if lens else ''}: {np.mean(errs):.1f} mm mean, "
+          f"{np.max(errs):.1f} mm max, reprojection {mean_px:.1f} px mean (before: {prev.get('spot_err_mm', float('nan')):.1f} mm) -> {out}")
 
 
 def _calibrate(a, robot, kin, ball, start, hold):
@@ -210,7 +225,7 @@ def _calibrate(a, robot, kin, ball, start, hold):
                  bc=np.asarray(bc).tolist(), bR=np.asarray(bR).tolist())
             for (px, P, _, _), (u, w, bc, bR, hp, hR) in zip(samples, truth)])))
         print(f"  spots saved to {spots_file}")
-        cam, mean_px, max_px, errs, samples, truth = robust_fit(frame.shape[1], frame.shape[0], samples, truth)
+        cam, mean_px, max_px, errs, samples, truth = robust_fit(frame.shape[1], frame.shape[0], samples, truth, lens=load_lens(a.sim))
         out = CALIB_FILE_SIM if a.sim else CALIB_FILE
         if np.mean(errs) > 10.0:  # the ball was moving, held, or not on the spots
             out = out.with_name(out.stem + "_rejected.json")

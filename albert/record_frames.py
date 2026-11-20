@@ -1,7 +1,11 @@
 """Record head-camera frames, no motion (Albert can stay in balance): for the camera's lens calibration (a checkerboard shown
 at many angles) or any visual dataset. Works from the Mac over LiveKit while Albert's UDP state goes to the Pi.
 
-    python -m albert.record_frames --seconds 60 --every 0.5 --name checkerboard
+    python -m albert.record_frames --seconds 90 --every 0.5 --name checkerboard
+
+With OpenCV installed (pip install opencv-python-headless) it says live whether the 9 x 6 checkerboard is in view and which
+parts of the image (a 6 x 4 grid) the board has covered so far: for the lens calibration, cover every cell, corners included,
+with the board both flat to the camera and tilted. Then: python -m albert.calibrate_lens <folder>.
 """
 from __future__ import annotations
 
@@ -29,6 +33,8 @@ def main():
         except ImportError:
             cv2 = None
         t0 = time.monotonic(); n = 0; last = None; found = 0
+        import numpy as np
+        grid = np.zeros((4, 6), bool)
         while time.monotonic() - t0 < a.seconds:
             f = robot.camera.latest()
             if f is not None and f.received_at != last:
@@ -40,9 +46,14 @@ def main():
                 n += 1
                 if cv2 is not None:
                     g = cv2.cvtColor(f.to_numpy()[::2, ::2, :3].copy(), cv2.COLOR_RGB2GRAY)
-                    ok, _ = cv2.findChessboardCorners(g, (9, 6), cv2.CALIB_CB_FAST_CHECK)
+                    ok, c = cv2.findChessboardCorners(g, (9, 6), cv2.CALIB_CB_FAST_CHECK)
                     found += int(ok)
-                    print(f"  frame {n}: {'BOARD SEEN' if ok else 'no board'}  ({found} with the board so far)", flush=True)
+                    if ok:
+                        c = c.reshape(-1, 2)
+                        grid[np.clip((c[:, 1] / g.shape[0] * 4).astype(int), 0, 3), np.clip((c[:, 0] / g.shape[1] * 6).astype(int), 0, 5)] = True
+                    rows = " | ".join("".join("#" if v else "." for v in row) for row in grid)
+                    print(f"  frame {n}: {'BOARD SEEN' if ok else 'no board  '}  ({found} so far)  covered {100 * grid.mean():3.0f} %  "
+                          f"[{rows}]  (top row first)", flush=True)
                 elif n % 10 == 0:
                     print(f"  {n} frames", flush=True)
                 time.sleep(a.every)

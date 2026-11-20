@@ -148,29 +148,80 @@ def debug_image(rgb, ball=BALL_WHITE, step=2):
     return np.concatenate([img, m], 1)
 
 
-class CameraModel:
-    """Pinhole camera rigidly attached to neck_pitch_link. Camera axes (OpenCV): x right, y down, z forward."""
+def lens_for(lens, width, height):
+    """The lens calibration (albert/calibrate_lens.py: fx, fy, cx, cy in pixels of its own resolution, OpenCV distortion
+    k1 k2 p1 p2 k3) scaled to a width x height image of the same sensor."""
+    if lens is None:
+        return None
+    sx, sy = width / lens["width"], height / lens["height"]
+    return dict(lens, fx=lens["fx"] * sx, fy=lens["fy"] * sy, cx=lens["cx"] * sx, cy=lens["cy"] * sy, width=width, height=height)
 
-    def __init__(self, width, height, params=None):
+
+def distort(x, y, k):
+    """Normalised image coordinates -> distorted ones (OpenCV model, k = k1 k2 p1 p2 k3)."""
+    k1, k2, p1, p2, k3 = (list(k) + [0.0] * 5)[:5]
+    r2 = x * x + y * y
+    radial = 1 + r2 * (k1 + r2 * (k2 + r2 * k3))
+    return x * radial + 2 * p1 * x * y + p2 * (r2 + 2 * x * x), y * radial + p1 * (r2 + 2 * y * y) + 2 * p2 * x * y
+
+
+def undistort(xd, yd, k, iters=20):
+    """Inverse of distort() by fixed-point iteration (as OpenCV's undistortPoints)."""
+    k1, k2, p1, p2, k3 = (list(k) + [0.0] * 5)[:5]
+    x, y = xd, yd
+    for _ in range(iters):
+        r2 = x * x + y * y
+        radial = 1 + r2 * (k1 + r2 * (k2 + r2 * k3))
+        x = (xd - (2 * p1 * x * y + p2 * (r2 + 2 * x * x))) / radial
+        y = (yd - (p1 * (r2 + 2 * y * y) + 2 * p2 * x * y)) / radial
+    return x, y
+
+
+class CameraModel:
+    """Camera rigidly attached to neck_pitch_link. Camera axes (OpenCV): x right, y down, z forward.
+    params: pose in the head (rotation vector, translation) and a focal length. Without a lens calibration it is a pinhole
+    with its centre in the middle of the image and that focal length (fitted with the pose by calibrate_camera.py). With one
+    (`lens`, from calibrate_lens.py, stored in the camera calibration it was used for): the lens's focal lengths, centre and
+    distortion, and only the pose is fitted."""
+
+    def __init__(self, width, height, params=None, lens=None):
         self.w, self.h = width, height
+        self.lens = lens_for(lens, width, height)
         if params is None:  # initial guess: front of the head, looking along the head's +x
             # camera axes in head coordinates: x_cam = -y_head (right), y_cam = -z_head (down), z_cam = +x_head (forward)
             r0 = Rotation.from_matrix(np.column_stack([[0, -1, 0], [0, 0, -1], [1, 0, 0]]).astype(float))
             params = np.r_[r0.as_rotvec(), 0.10, 0.0, 0.045, 0.8 * width]
         self.p = np.asarray(params, float)
+        if self.lens is not None:
+            self.p[6] = self.lens["fx"]
 
     def _cam(self, p=None):
         p = self.p if p is None else p
         return Rotation.from_rotvec(p[:3]).as_matrix(), p[3:6], p[6]  # R head<-cam, t in head, focal (px)
 
+    def _intr(self, f):
+        """fx, fy, cx, cy, distortion."""
+        if self.lens is None:
+            return f, f, self.w / 2, self.h / 2, None
+        L = self.lens
+        return L["fx"], L["fy"], L["cx"], L["cy"], L["dist"]
+
     def project(self, P_world, head_pos, head_R, p=None):
         Rc, t, f = self._cam(p)
         Pc = (Rc.T @ (head_R.T @ (np.asarray(P_world) - head_pos) - t))
-        return np.array([f * Pc[0] / Pc[2] + self.w / 2, f * Pc[1] / Pc[2] + self.h / 2]), Pc[2]
+        fx, fy, cx, cy, k = self._intr(f)
+        x, y = Pc[0] / Pc[2], Pc[1] / Pc[2]
+        if k is not None:
+            x, y = distort(x, y, k)
+        return np.array([fx * x + cx, fy * y + cy]), Pc[2]
 
     def ray(self, px, head_pos, head_R):
         Rc, t, f = self._cam()
-        d_cam = np.array([(px[0] - self.w / 2) / f, (px[1] - self.h / 2) / f, 1.0])
+        fx, fy, cx, cy, k = self._intr(f)
+        x, y = (px[0] - cx) / fx, (px[1] - cy) / fy
+        if k is not None:
+            x, y = undistort(x, y, k)
+        d_cam = np.array([x, y, 1.0])
         return head_pos + head_R @ t, head_R @ Rc @ (d_cam / np.linalg.norm(d_cam))
 
     def ball_on_blade(self, px, head_pos, head_R, blade_c, blade_R):
@@ -188,13 +239,24 @@ class CameraModel:
         return rel[:2]
 
     def fit(self, samples):
-        """samples: list of (pixel (2,), ball centre world (3,), head_pos, head_R). Fits pose + focal length."""
+        """samples: list of (pixel (2,), ball centre world (3,), head_pos, head_R). Fits the pose and, without a lens
+        calibration, the focal length."""
         def res(p):
             out = []
             for px, P, hp, hR in samples:
                 q, z = self.project(P, hp, hR, p)
                 out.append(q - px if z > 0 else np.array([1e3, 1e3]))
             return np.concatenate(out)
+
+        if self.lens is not None:  # the lens is known: the 6 pose numbers only (better conditioned than with the focal length)
+            t0 = self.p[3:6].copy()
+            f = self.p[6]
+            pose = lambda q: res(np.r_[q, f])
+            lo, hi = np.r_[-np.inf * np.ones(3), t0 - 0.06], np.r_[np.inf * np.ones(3), t0 + 0.06]
+            r = least_squares(pose, self.p[:6], loss="soft_l1", f_scale=3.0, bounds=(lo, hi))
+            self.p = np.r_[r.x, f]
+            err = np.linalg.norm(res(self.p).reshape(-1, 2), axis=1)
+            return float(np.mean(err)), float(np.max(err))
 
         # the camera sits on the face: position within 6 cm of the guess, focal length between 0.25 and 2.5 x the width
         t0 = self.p[3:6].copy()
@@ -211,11 +273,11 @@ class CameraModel:
         return float(np.mean(err)), float(np.max(err))
 
     def to_json(self):
-        return dict(width=self.w, height=self.h, params=self.p.tolist())
+        return dict(width=self.w, height=self.h, params=self.p.tolist(), **({"lens": self.lens} if self.lens else {}))
 
     @classmethod
     def from_json(cls, j):
-        return cls(j["width"], j["height"], j["params"])
+        return cls(j["width"], j["height"], j["params"], lens=j.get("lens"))
 
 
 def blade_roi(cam, head_pos, head_R, blade_c, blade_R, radius, margin_px=24, step=4):

@@ -40,6 +40,8 @@ joints + IMU (200 Hz) ----> arm model --> Kalman predictor: replays each frame a
 safety: lean watchdog every 20 ms; any error / Ctrl+C / ssh drop --> arm glides home --> stand() -> balance() (never DAMP)
 ```
 
+- **Ball detector:** colour thresholds and blob shape tests, no neural network; diagram and results in
+  [`docs/detector.md`](docs/detector.md).
 - **Observation (40):** ball position / velocity on the blade (predictor), gravity in the blade frame, gyro, accelerometer,
   arm angles and velocities, gait clock (zeros when standing), last 3 actions. **Action (5):** right-arm joint increments
   (x 0.03 rad) at 50 Hz.

@@ -23,6 +23,7 @@ own computer (a Raspberry Pi 5, see [ONBOARD.md](ONBOARD.md)): same code, same c
 | status (read-only) | `python -m albert.status` (`--mode livekit` while the Pi has the UDP state) | not faulted, joints < 60 C |
 | joint directions (new robot) | `python -m albert.check_joints --supported` | each joint moves as described |
 | arm offsets + flat pose | `python -m albert.teach_flat --supported` (hold the paddle flat at 3 positions) | residual tilt < 3 deg |
+| head camera lens (once: checkerboard `data/checkerboard_9x6.png` held all over the image) | `python -m albert.record_frames --seconds 90 --name checkerboard`, then `uv run --with opencv-python-headless python -m albert.calibrate_lens data/<day>/checkerboard_<time>` | < 0.5 px rms, > 50 % of the image covered; refits the pose below from the saved spots |
 | head camera (9 spots, stencil `calibration_spots_A4.pdf`) | `python -m albert.calibrate_camera --supported` | ~3 mm mean |
 | where the camera sees the paddle | `python -m albert.aim_sweep --supported` | blade pixels at the run's neck aim |
 | camera latency | `python -m albert.measure_latency --supported` | ~105 ms over Wi-Fi |
@@ -54,7 +55,8 @@ After a run: `python -m tools.session_stats <log>.csv`, `python -m tools.tune_kf
 |---|---|
 | `run_policy.py` | the 50 Hz balancing loop (camera → detector → Kalman predictor → policy → arm) |
 | `common.py` | joint order and mapping, gains, kinematics, observation, safety (`hand_back`, `to_balance`, `TiltGuard`, stance) |
-| `ball_camera.py` | ball detector (blade region), camera model, ray–blade intersection, calibration fit |
+| `ball_camera.py` | ball detector ([diagram](../docs/detector.md)), camera model (lens distortion if calibrated), ray–blade intersection, calibration fit |
+| `calibrate_lens.py` | the camera's lens from checkerboard frames (focal lengths, centre, distortion) |
 | `stand_test.py`, `sim_freestand.py` | standing without the gantry's support: on Albert / simulated (with a gantry rope) |
 | `sim_robot.py` | simulated Albert (menlo-sdk-shaped API, rendered head camera, identified arm) |
 | `calibrate_camera.py`, `teach_flat.py`, `measure_latency.py`, `sysid_arm_test.py`, `aim_sweep.py`, `check_joints.py`, `status.py`, `record_frames.py`, `record_demo.py` | calibrations and checks |
