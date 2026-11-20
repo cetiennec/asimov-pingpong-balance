@@ -1,0 +1,66 @@
+{
+ "stage": "bounce",
+ "bounce": [
+  0.04,
+  0.15
+ ],
+ "p_rest": 0.15,
+ "privileged_critic": true,
+ "name": "albert_bounce",
+ "init": "outputs/albert_bounce_c/best.pt",
+ "iters": 400,
+ "steps": 64,
+ "workers": 16,
+ "envs_per_worker": 17,
+ "lr": 0.0003,
+ "gamma": 0.99,
+ "lam": 0.95,
+ "reward_scale": 0.1,
+ "ball_noise": 1.0,
+ "max_latency": 2,
+ "smooth_penalty": 0.01,
+ "air_penalty": 0.0,
+ "camera_obs": true,
+ "cam_fps": [
+  18.0,
+  30.0
+ ],
+ "cam_latency": [
+  0.07,
+  0.16
+ ],
+ "home": "default",
+ "home_q": [
+  0.7577,
+  0.9729,
+  -0.6564,
+  -1.396,
+  -1.2616
+ ],
+ "stand_gravity": [
+  0.1214,
+  0.0081,
+  -0.9929
+ ],
+ "ball_start": [
+  0.03,
+  0.1
+ ],
+ "estimator": "kf3",
+ "act_latency": [
+  1,
+  4
+ ],
+ "arm_dyn": "albert/arm_dynamics.json",
+ "cam_outliers": 0.1,
+ "cam_drops": 0.08,
+ "tilt_bias": 0.04,
+ "stand_gravity2": [
+  0.203,
+  -0.011,
+  -0.98
+ ],
+ "min_std": 0.15,
+ "save_every": 20,
+ "seed": 0
+}

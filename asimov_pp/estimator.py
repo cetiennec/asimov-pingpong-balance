@@ -200,3 +200,199 @@ class BallKF:
     def bias(self):
         """Estimated in-plane gravity error (unit g), or zeros."""
         return self.x[4:6].copy() if (self.x is not None and self.n == 6) else self.b.copy()
+
+
+# ---------------------------------------------------------------------------------------------------------------------------
+# Bouncing ball: a 3D predictor
+# ---------------------------------------------------------------------------------------------------------------------------
+# Ball radius / blade half-thickness / radius, as in asimov_pp/model.py (not imported: albert/ imports this module on the Pi)
+_BALL_R, _BLADE_HT, _BLADE_R = 0.020, 0.005, 0.076
+# Air drag of a 40 mm, 2.7 g ball: a = -K_DRAG |v| v, K = rho Cd A / 2m = 1.2 * 0.5 * 1.26e-3 / (2 * 2.7e-3) (terminal 8.4 m/s)
+K_DRAG = 0.14
+
+# The bounce stage's predictor (env.py with bounce=..., estimator "kf3"). Same camera timing as BallKF; the state is 3D.
+KF3_PARAMS = dict(accel_noise=0.8, roll_noise=1.5, restitution=0.87, restitution_std=0.06, damping=0.5, roll_gain=0.87,
+                  rest_speed=0.25, gate=3.5, huber=2.0, reset_after=3)
+
+
+class BallKF3D:
+    """Ball position and velocity in 3D (a gravity-aligned frame fixed to the standing robot: the sim's world, or on Albert the
+    arm model's frame turned by the IMU), from head-camera detections that give the ball's centre in 3D (pixel centre -> ray,
+    apparent radius -> distance; the measurement covariance is long along the ray).
+
+    Prediction, every control step, is a hybrid model of the ball and the blade, whose pose and velocity come from the arm
+    model (joint angles and velocities):
+        in flight   gravity + air drag
+        impact      the ball reaches the blade disc faster than rest_speed (relative, along the normal): its normal velocity
+                    relative to the blade is reversed and scaled by the restitution (uncertain: restitution_std)
+        on the blade slower than that: it rides on the blade (normal velocity = the blade's) and rolls in the plane like BallKF
+                    (3/5 g sin(tilt), damping)
+    The paddle's own motion is therefore in the prediction: a hit launches the ball, and a ball in flight is predicted through
+    the camera's latency (~105 ms on Albert, a third of a 10 cm bounce). Delayed frames are replayed at their capture time,
+    outliers gated and down-weighted (Huber), and the filter restarts from two consistent detections after a drift, as BallKF.
+    """
+
+    def __init__(self, dt=0.02, accel_noise=0.8, roll_noise=1.5, restitution=0.87, restitution_std=0.06, damping=0.5,
+                 roll_gain=0.87, rest_speed=0.25, gate=3.5, huber=2.0, reset_after=3, history_s=0.6, drag=K_DRAG, impact_tangent=0.05):
+        self.dt, self.q, self.q_roll, self.e, self.e_std = dt, accel_noise, roll_noise, restitution, restitution_std
+        self.c, self.roll_gain, self.rest_speed, self.gate, self.huber = damping, roll_gain, rest_speed, gate, huber
+        self.reset_after, self.drag, self.impact_tangent = reset_after, drag, impact_tangent
+        self.n_hist = 2 * int(history_s / dt) + 4
+        self.reset()
+
+    def reset(self):
+        self.x, self.P, self.t, self.pending = None, None, None, None
+        self.hist = deque(maxlen=self.n_hist)
+        self.n_rejected = 0
+        self.contact = False   # last prediction ended on the blade
+        self.n_impacts = 0     # predicted impacts (for logging)
+
+    # --- model ---
+    def _predict(self, x, P, blade, dt):
+        """blade: (c, R, v_c, w): blade centre (world), rotation (columns u, w, n), velocity of its centre, angular velocity."""
+        p, v = x[:3], x[3:]
+        g = np.array([0.0, 0.0, -G])
+        sp = float(np.linalg.norm(v))
+        a = g - self.drag * sp * v
+        p1, v1 = p + v * dt + 0.5 * a * dt * dt, v + a * dt
+        F = np.eye(6); F[:3, 3:] = np.eye(3) * dt; F[3:, 3:] = np.eye(3) * (1 - self.drag * sp * dt)
+        P1 = F @ P @ F.T
+        g1 = np.array([0.5 * dt * dt, dt]) * self.q
+        Q = np.zeros((6, 6))
+        for i in range(3):
+            Q[np.ix_([i, i + 3], [i, i + 3])] = np.outer(g1, g1)
+        P1 = P1 + Q
+        contact = False
+        if blade is not None:
+            c, R, vc, w = blade
+            n = R[:, 2]
+            r = p1 - c
+            hn = float(n @ r) - (_BALL_R + _BLADE_HT)
+            r_in = r - (n @ r) * n
+            if hn < 0.0 and hn > -0.05 and np.linalg.norm(r_in) < _BLADE_R + 0.5 * _BALL_R:
+                vb = vc + np.cross(w, r)  # the blade's material point under the ball
+                vrel = v1 - vb
+                vn = float(n @ vrel)
+                Pn = np.outer(n, n)
+                if vn < -self.rest_speed:  # impact: reflect the normal motion relative to the blade
+                    J = np.eye(3) - (1 + self.e) * Pn
+                    p1 = p1 - (1 + self.e) * hn * n
+                    v1 = v1 - (1 + self.e) * vn * n
+                    Jf = np.zeros((6, 6)); Jf[:3, :3] = J; Jf[3:, 3:] = J
+                    P1 = Jf @ P1 @ Jf.T
+                    Qi = np.zeros((6, 6))
+                    Qi[3:, 3:] = (self.e_std * vn) ** 2 * Pn + (self.impact_tangent * vn) ** 2 * (np.eye(3) - Pn)  # restitution, spin / friction
+                    P1 = P1 + Qi
+                    self.n_impacts += 1
+                else:  # on the blade: carried along the normal, rolling in the plane
+                    contact = True
+                    Pi = np.eye(3) - Pn
+                    g_in = Pi @ g
+                    vt = Pi @ vrel
+                    # the free-flight step applied the full in-plane gravity: make it the rolling one, with damping
+                    vt = vt + ((ROLL * self.roll_gain - 1.0) * g_in - self.c * vt) * dt
+                    p1 = p1 - hn * n + 0.5 * (ROLL * self.roll_gain - 1.0) * g_in * dt * dt
+                    v1 = vb + vt
+                    Jf = np.zeros((6, 6)); Jf[:3, :3] = Pi; Jf[3:, 3:] = Pi
+                    P1 = Jf @ P1 @ Jf.T
+                    gr = np.array([0.5 * dt * dt, dt]) * self.q_roll
+                    Qr = np.zeros((6, 6))
+                    Qr[:3, :3] = gr[0] ** 2 * Pi + 1e-8 * Pn
+                    Qr[3:, 3:] = gr[1] ** 2 * Pi + 1e-4 * Pn
+                    Qr[:3, 3:] = Qr[3:, :3] = gr[0] * gr[1] * Pi
+                    P1 = P1 + Qr
+        return np.r_[p1, v1], 0.5 * (P1 + P1.T), contact
+
+    # --- API ---
+    def step(self, t, blade):
+        """Advance to time t (one control step) with the blade's pose and velocity: (c, R, v_c, w), world frame."""
+        n = 1 if (self.t is None or self.x is None) else max(1, int(round((t - self.t) / self.dt)))
+        dt = self.dt if (self.t is None or self.x is None or t <= self.t) else (t - self.t) / n
+        for i in range(n):
+            ti = t - (n - 1 - i) * dt
+            if self.x is not None:
+                self.x, self.P, self.contact = self._predict(self.x, self.P, blade, dt)
+            self.hist.append((ti, None if self.x is None else self.x.copy(), None if self.P is None else self.P.copy(), blade, dt))
+        self.t = t
+
+    def _init(self, z, Rz, v=None):
+        x = np.r_[z, np.zeros(3) if v is None else v]
+        P = np.zeros((6, 6)); P[:3, :3] = Rz; P[3:, 3:] = np.eye(3) * (0.6 if v is None else 0.25) ** 2
+        return x, P
+
+    def _start_at(self, t_cap, z, Rz, v=None):
+        self.x, self.P = self._init(z, Rz, v)
+        self.hist.clear(); self.hist.append((t_cap, self.x.copy(), self.P.copy(), None, self.dt))
+        self.t, self.pending, self.n_rejected = t_cap, None, 0
+
+    def measure(self, t_cap, z, Rz):
+        """A camera detection: ball centre z (3, world, m) captured at t_cap, covariance Rz (3x3). True if accepted."""
+        z, Rz = np.asarray(z, float), np.asarray(Rz, float)
+        if self.x is None or not self.hist:
+            if self.pending is None:
+                if self.t is None:
+                    self._start_at(t_cap, z, Rz)
+                    return True
+                self.pending = (t_cap, z)
+                return False
+            t1, z1 = self.pending
+            if t_cap > t1 and t_cap - t1 < 0.3 and np.linalg.norm(z - z1) / (t_cap - t1) < 4.0:
+                v = (z - z1) / (t_cap - t1) + np.array([0, 0, -0.5 * G * (t_cap - t1)])
+                self._start_at(t_cap, z, Rz, np.clip(v, -4, 4))
+                # the next step() catches up to the present from the capture time
+                return True
+            self.pending = (t_cap, z)
+            return False
+        hist = list(self.hist)
+        k = max(i for i in range(len(hist)) if hist[i][0] <= t_cap) if hist[0][0] <= t_cap else 0
+        if hist[k][1] is None:
+            return False
+        x, P = hist[k][1].copy(), hist[k][2].copy()
+        lag = t_cap - hist[k][0]
+        nxt = hist[k + 1] if k + 1 < len(hist) else None
+        if 1e-4 < lag and nxt is not None:
+            x, P, _ = self._predict(x, P, nxt[3], lag)
+        S = P[:3, :3] + Rz
+        y = z - x[:3]
+        d2 = float(y @ np.linalg.solve(S, y))
+        if d2 > self.gate ** 2:
+            self.n_rejected += 1
+            if self.n_rejected >= self.reset_after:
+                t_keep = self.t
+                self.reset(); self.t = t_keep
+                self.pending = (t_cap, z)
+            return False
+        self.n_rejected = 0
+        if self.huber is not None and d2 > self.huber ** 2:
+            S = P[:3, :3] + Rz * (np.sqrt(d2) / self.huber)
+        K = P[:, :3] @ np.linalg.inv(S)
+        x = x + K @ y
+        P = P - K @ P[:3, :]
+        P = 0.5 * (P + P.T)
+        new = hist[:k + 1] + [(t_cap, x.copy(), P.copy(), hist[k][3], 0.0)]
+        rest = hist[k + 1:]
+        contact = False
+        if rest:
+            t_i, _, _, blade, dt_i = rest[0]
+            x, P, contact = self._predict(x, P, blade, max(t_i - t_cap, 0.0)) if t_i > t_cap else (x, P, contact)
+            new.append((t_i, x.copy(), P.copy(), blade, dt_i))
+            for t_i, _, _, blade, dt_i in rest[1:]:
+                x, P, contact = self._predict(x, P, blade, dt_i)
+                new.append((t_i, x.copy(), P.copy(), blade, dt_i))
+        self.hist = deque(new, maxlen=self.n_hist)
+        self.x, self.P, self.contact = x, P, contact
+        return True
+
+    def state(self):
+        """(x, y, z, vx, vy, vz) now (world), or None before the first detection."""
+        return None if self.x is None else self.x.copy()
+
+
+def detection_to_3d(o, d, r_px, f, centre_px_std=2.5, radius_px_std=1.2):
+    """Head-camera detection -> ball centre in 3D and its covariance. o, d: camera centre and unit ray through the ball's image
+    centre (CameraModel.ray), r_px: apparent radius (px), f: focal length (px). Distance = f R / r_px; its error grows as the
+    distance squared (radius_px_std), the error across the ray as the distance (centre_px_std)."""
+    rho = f * _BALL_R / max(r_px, 1.0)
+    s_lat, s_rng = rho * centre_px_std / f, rho * rho * radius_px_std / (f * _BALL_R)
+    D = np.outer(d, d)
+    return o + rho * d, s_lat ** 2 * (np.eye(3) - D) + s_rng ** 2 * D

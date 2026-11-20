@@ -70,9 +70,17 @@ BLADE_X = HANDLE_X0 + HANDLE_LEN + BLADE_R - 0.012  # the blade overlaps the han
 PADDLE_ROLL_DEG = 135.0   # cradle rotation about the forearm axis (chosen so that home wrist yaw is mid-range)
 
 BALL_R, BALL_M = 0.020, 0.0027
+# Bouncing ball (build(bounce=True)): the blade's contact as a direct spring-damper (stiffness, damping per unit constraint
+# mass), with priority over the ball's own contact parameters. MuJoCo's default soft contact (timeconst, dampratio = 0.004, 1)
+# is critically damped: a ball dropped on the blade does not rebound (restitution ~0.15). A low damping ratio with a 4 ms time
+# constant is unstable at the 2 ms physics step (the ball leaves at 200 m/s), so the contact is made softer (8-10 ms long,
+# 2-6 mm deep) and lightly damped: restitution 0.87 +- 0.04 for drops of 1-30 cm (tests/test_ball_bounce.py), as a 40 mm
+# ball on a table-tennis rubber (0.85-0.9). The env randomizes the damping (BOUNCE_DAMPING) per episode.
+BOUNCE_SOLREF = (-1.0e5, -25.0)
+BOUNCE_DAMPING = (18.0, 32.0)   # restitution ~0.90 .. 0.83
 
 
-def _paddle(spec: mujoco.MjSpec, light: bool, roll_deg: float):
+def _paddle(spec: mujoco.MjSpec, light: bool, roll_deg: float, bounce: bool = False):
     wrist = spec.body("right_wrist_yaw_link")
     # no gripper module: the wrist-yaw link is only the cup
     for g in list(wrist.geoms):
@@ -107,7 +115,8 @@ def _paddle(spec: mujoco.MjSpec, light: bool, roll_deg: float):
     pad.add_geom(name="handle", type=mujoco.mjtGeom.mjGEOM_BOX, size=[HANDLE_LEN / 2, HANDLE_W / 2, HANDLE_T / 2],
                  pos=[HANDLE_X0 + HANDLE_LEN / 2, 0, 0], rgba=[0.72, 0.5, 0.28, 1], contype=2, conaffinity=0, mass=0.08)
     pad.add_geom(name="paddle_blade", type=mujoco.mjtGeom.mjGEOM_CYLINDER, size=[BLADE_R, BLADE_HT, 0], pos=[BLADE_X, 0, 0],
-                 rgba=[0.55, 0.36, 0.2, 1], friction=[1.0, 0.005, 0.0001], condim=4, solref=[0.004, 1],
+                 rgba=[0.55, 0.36, 0.2, 1], friction=[1.0, 0.005, 0.0001], condim=4,
+                 solref=list(BOUNCE_SOLREF) if bounce else [0.004, 1], priority=1 if bounce else 0,
                  contype=2, conaffinity=0, mass=0.09)
     if not light:  # rubbers: red top (+z), black bottom
         for name, z, rgba in (("rubber_red", 1, [0.85, 0.08, 0.08, 1]), ("rubber_black", -1, [0.05, 0.05, 0.05, 1])):
@@ -126,8 +135,9 @@ def _ball(spec: mujoco.MjSpec):
     b.explicitinertial = True
 
 
-def build(kind: str = "sim", roll_deg: float = PADDLE_ROLL_DEG, stand_pd: dict | None = None) -> mujoco.MjModel:
-    """stand_pd (render only): {joint: (kp, kd)} position actuators on the other joints, and feet that touch the floor: the
+def build(kind: str = "sim", roll_deg: float = PADDLE_ROLL_DEG, stand_pd: dict | None = None, bounce: bool = False) -> mujoco.MjModel:
+    """bounce: a lively ball-blade contact (restitution ~0.87, BOUNCE_SOLREF) instead of the critically damped one.
+    stand_pd (render only): {joint: (kp, kd)} position actuators on the other joints, and feet that touch the floor: the
     whole robot standing on its own, every joint held by PD as under Menlo's trajectory command (albert/sim_freestand.py)."""
     assert kind in ("sim", "render")
     sim = kind == "sim"
@@ -163,7 +173,7 @@ def build(kind: str = "sim", roll_deg: float = PADDLE_ROLL_DEG, stand_pd: dict |
             spec.delete(t)
         for mat in list(spec.materials):
             spec.delete(mat)
-    _paddle(spec, light=sim, roll_deg=roll_deg)
+    _paddle(spec, light=sim, roll_deg=roll_deg, bounce=bounce)
     _ball(spec)
     for j in ARM_JOINTS:
         kp, kd, eff = ARM_PD[j]

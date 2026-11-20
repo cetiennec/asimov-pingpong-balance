@@ -22,14 +22,17 @@ def mlp(inp: int, out: int, hidden: int = 256, layers: int = 2, out_gain: float 
 class ActorCritic(nn.Module):
     """Separate actor and critic MLPs. Gaussian policy: the actor gives the mean, the std is a learned obs-independent parameter."""
 
-    def __init__(self, obs_dim: int = 40, act_dim: int = 5, hidden: int = 256, init_std: float = 0.5):
+    def __init__(self, obs_dim: int = 40, act_dim: int = 5, hidden: int = 256, init_std: float = 0.5, critic_dim: int | None = None):
+        """critic_dim > obs_dim: asymmetric actor-critic, the observations carry privileged values after the policy's obs_dim
+        inputs, which only the critic sees (training in simulation)."""
         super().__init__()
+        self.obs_dim = obs_dim
         self.actor = mlp(obs_dim, act_dim, hidden, out_gain=0.01)  # near-zero first actions
-        self.critic = mlp(obs_dim, 1, hidden, out_gain=1.0)
+        self.critic = mlp(critic_dim or obs_dim, 1, hidden, out_gain=1.0)
         self.log_std = nn.Parameter(torch.full((act_dim,), float(np.log(init_std))))
 
     def dist(self, obs):
-        return torch.distributions.Normal(self.actor(obs), self.log_std.exp())
+        return torch.distributions.Normal(self.actor(obs[..., :self.obs_dim]), self.log_std.exp())
 
     def value(self, obs):
         return self.critic(obs).squeeze(-1)
@@ -103,6 +106,8 @@ def load_policy(path):
 
     def act(obs):
         o = np.asarray(obs, np.float64)
+        if o.shape[-1] > n_in + 2:  # privileged values at the end (training envs): not the policy's
+            o = o[..., :n_in]
         if n_in == o.shape[-1] - 2:
             o = np.concatenate([o[..., :23], o[..., 25:]], -1)
         h = o

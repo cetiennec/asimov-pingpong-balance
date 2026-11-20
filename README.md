@@ -59,6 +59,7 @@ safety: lean watchdog every 20 ms; any error / Ctrl+C / ssh drop --> arm glides 
 | **`albert_v3_final`** | **default.** v2A fine-tuned across the gantry and free-standing leans (sim, free-standing: 70 % vs 65 %, ball 2.1 vs 2.7 cm off-centre) |
 | `albert_v2A` | trained on the sim matched to Albert (identified arm, tuned predictor, realistic camera); ran on Albert: 57 s / 60 free-standing |
 | `albert_v2B` | same, smoother-arm reward |
+| `albert_bounce` | **bounce stage** (sim only): keeps the ball bouncing to a target apex of 4-15 cm, 43 inputs. With Albert's camera model 3-4 s (12-15 bounces); with the true ball state 14-16 s of 20. [`docs/bounce.md`](docs/bounce.md) |
 | `albert_perturb`, `albert_balance` | first Albert policies (Kalman predictor, 40-100 ms arm delay) |
 | `albert_move` | walking stage (sim only, weak; Albert cannot walk with an external arm controller yet) |
 | `cam_*`, `balance` / `perturb` / `move` | generic Asimov 1, head-camera model or ideal ball state, stages 1-3 (sim: 92-100 %) |
@@ -82,7 +83,8 @@ action = policy(obs)                                       # obs: 40 floats -> 5
 | `hardware/` | paddle holder (`paddle_holder.py` → `.stl`; v5 follows the flared handle, has a flat print face and no sharp inside corners; v4 kept) |
 | `data/` | run logs of the sessions on Albert (CSV at 50 Hz: ball estimate, arm, actions; `*_frames.csv`: every camera detection). As a LeRobot dataset: [cetiennec/asimov-pingpong-albert](https://huggingface.co/datasets/cetiennec/asimov-pingpong-albert) (`tools/export_lerobot.py`). Runs since 2026-11-20 also record the raw head camera, exported with `--video` (kept local: it shows people) |
 | `videos/` | simulation videos |
-| `train_*.sh` | training commands |
+| `tests/` | ball restitution drop test, 3D predictor error (`python tests/test_ball_bounce.py`) |
+| `train_*.sh` | training commands (`train_bounce.sh`: the bounce stage's curriculum) |
 
 Not included: Menlo's Asimov 1 MJCF and meshes (expected in `../supermimic_ws/asimov-1/sim-model`), the wrist-cup mesh made
 from Menlo's CAD (`assets/ASV1_300_12B_wristframe.stl`), raw robot recordings and camera images.
@@ -94,6 +96,7 @@ uv sync --extra albert
 uv run python -m albert.run_policy --sim --hand --duration 30          # the whole pipeline on a simulated Albert
 uv run python -m albert.run_policy --sim --freestand --truth-ball      # standing without support, simulated
 uv run python -m tools.eval_albert outputs/albert_v3_final/best.pt     # robot-matched sim evaluation
+uv run python -m tools.eval_bounce outputs/albert_bounce/best.pt       # bounce stage, robot-matched (docs/bounce.md)
 ```
 
 On the robot: `albert/README.md` (calibrations, gantry, free-standing), `albert/ONBOARD.md` (running on Albert's Pi).

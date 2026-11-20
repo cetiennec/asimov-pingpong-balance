@@ -29,10 +29,11 @@ def _font(size):
     return ImageFont.load_default()
 
 
-def render_episode(ac, task_name, seconds, seed, cam_mode="follow", camera_obs=False):
+def render_episode(ac, task_name, seconds, seed, cam_mode="follow", camera_obs=False, env_kwargs=None, label=None):
+    """env_kwargs: BalanceEnv arguments (e.g. the robot-matched bounce sim of tools/eval_bounce.py); label: the title."""
     task = EVAL_TASKS.get(task_name) or STAGES[task_name]
     task = type(task)(**{**task.__dict__, "max_steps": int(seconds / 0.02)})
-    env = BalanceEnv(task, seed=seed, camera_obs=camera_obs)
+    env = BalanceEnv(task, seed=seed, **({"camera_obs": camera_obs} if env_kwargs is None else env_kwargs))
     rm = build("render"); rd = mujoco.MjData(rm)
     rend = mujoco.Renderer(rm, H, W)
     stand = standing_qpos(rm)
@@ -72,9 +73,14 @@ def render_episode(ac, task_name, seconds, seed, cam_mode="follow", camera_obs=F
         cam.azimuth = np.degrees(yaw0) - 140
         rend.update_scene(rd, cam)
         img = Image.fromarray(rend.render()); dr = ImageDraw.Draw(img)
-        dr.text((20, 16), task_name, font=font, fill=(255, 255, 255))
+        dr.text((20, 16), label or task_name, font=font, fill=(255, 255, 255))
         t = env.t * 0.02
-        dr.text((20, 50), f"t = {t:4.1f} s   ball {100 * info['dist']:4.1f} cm from centre", font=small, fill=(230, 230, 230))
+        if "n_bounces" in info:
+            ap = info["apexes"][-1] if info["apexes"] else float("nan")
+            dr.text((20, 50), f"t = {t:4.1f} s   bounces {info['n_bounces']:3d}   last apex {100 * ap:4.1f} cm (target {100 * info['target']:.0f})"
+                    f"   ball {100 * info['dist']:4.1f} cm from centre", font=small, fill=(230, 230, 230))
+        else:
+            dr.text((20, 50), f"t = {t:4.1f} s   ball {100 * info['dist']:4.1f} cm from centre", font=small, fill=(230, 230, 230))
         ev = [("ball kick", k) for k in kicks if 0 <= env.t - k < 25] + [("paddle shove", k) for k in shoves if 0 <= env.t - k < 25] + \
              [("torso push", k) for k in env.push_steps if 0 <= env.t - k < 25]
         if ev:

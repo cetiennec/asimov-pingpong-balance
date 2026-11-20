@@ -20,5 +20,6 @@ data/**/*_camera.mp4
 outputs/*
 !outputs/albert_v3_final/
 !outputs/albert_v2A/
+!outputs/albert_bounce/
 outputs/**/last.pt
 data/lerobot/

@@ -20,6 +20,14 @@ Observation (40, everything the real robot has: IMU, joint encoders, ball positi
     [23:25] gait clock (sin, cos of the walking controller's phase; 0 when standing)
     [25:40] last 3 actions, newest first
 Action: 5 joint-target deltas in [-1, 1] x 0.03 rad.
+
+Bounce stage (bounce=(lo, hi), BOUNCE_OBS_DIM = 43 inputs): the ball is kept bouncing on the paddle to a target apex height
+drawn per episode in [lo, hi] (m above the blade), on a lively blade contact (model.build(bounce=True), restitution ~0.87)
+with air drag. The head camera gives the ball in 3D (pixel centre + apparent radius, the camera model of Albert's
+calibration; out-of-image frames are lost) and a 3D hybrid predictor (estimator.BallKF3D: flight / impact / rolling) gives
+the ball now. Inputs [0:4] are the predictor's ball in the blade frame as above (u, w, vu, vw relative to the blade); three
+more go before the action history:
+    [25:28] ball height above the blade / 0.1 m, its normal velocity relative to the blade / 2 m/s, target apex / 0.1 m
 """
 from __future__ import annotations
 
@@ -29,7 +37,7 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
-from asimov_pp.model import ARM_JOINTS, BALL_R, BLADE_HT, BLADE_R, STAND_HEIGHT, build
+from asimov_pp.model import ARM_JOINTS, BALL_M, BALL_R, BLADE_HT, BLADE_R, BOUNCE_DAMPING, BOUNCE_SOLREF, STAND_HEIGHT, build
 
 HOME_Q = np.array([0.6736, 0.4992, -0.5901, -1.0606, -1.6396])  # blade at (0.33, -0.20, 0.80) m (IK on the arm model)
 # Albert: blade 5 cm further forward and 8 cm higher, (0.38, -0.20, 0.88) m, so the head camera sees all of it
@@ -45,6 +53,19 @@ G = 9.81
 FD_ALPHA = 0.5
 ACT_HIST = 3
 OBS_DIM = 25 + 5 * ACT_HIST
+BOUNCE_EXTRA = 3
+BOUNCE_OBS_DIM = OBS_DIM + BOUNCE_EXTRA
+PRIV_DIM = 15
+# Albert's head camera (albert/camera_calibration.json, neck at common.NECK_YAW / NECK_PITCH) in the torso frame
+# (waist_yaw_link): optical centre, and rotation torso <- camera (OpenCV axes: x right, y down, z forward). Pinhole, 1280 x 720.
+CAM_IN_TORSO = np.array([-0.01335, -0.05492, 0.38433])
+CAM_R_TORSO = np.array([[-0.38977, -0.19280, 0.90051], [-0.92059, 0.10744, -0.37546], [-0.02436, -0.97534, -0.21936]])
+CAM_F, CAM_W, CAM_H = 760.9, 1280, 720
+# detection noise (px): centre jitter (1.5 mm at the blade, as measured on Albert) and apparent radius (assumed: not logged on
+# Albert yet); both grow with the ball's speed (motion blur in a ~10 ms exposure)
+CAM_CENTRE_PX, CAM_RADIUS_PX, CAM_EXPOSURE = 2.6, 1.2, 0.010
+# air drag of the ball (estimator.K_DRAG: rho Cd A / 2m)
+from asimov_pp.estimator import K_DRAG  # noqa: E402
 
 
 @dataclass
@@ -154,7 +175,8 @@ class BalanceEnv:
                  cam_fps: tuple = CAM_FPS, cam_latency: tuple = CAM_LATENCY, home: str = "default", home_q=None, stand_gravity=None,
                  ball_start=(0.02, 0.03), estimator: str = "fd", act_latency=None,
                  seed: int | None = None, arm_dyn=None, kf_params=None, cam_outliers: float = 0.0, cam_drops: float = 0.0,
-                 tilt_bias: float = 0.0, stand_gravity2=None,
+                 tilt_bias: float = 0.0, stand_gravity2=None, bounce=None, p_rest: float = 0.3, privileged: bool = False,
+                 cam_noise_px=None,
                  model: mujoco.MjModel | None = None):
         self.task = STAGES[task] if isinstance(task, str) else task
         self.domain_rand, self.ball_noise, self.max_latency, self.home_penalty = domain_rand, ball_noise, max_latency, home_penalty
@@ -166,6 +188,20 @@ class BalanceEnv:
         # ball observation from the camera model: "fd" = last frame + finite-difference velocity; "kf" = Kalman filter that
         # predicts the ball NOW from the blade tilt and corrects with each delayed frame (asimov_pp/estimator.py, as on Albert)
         self.estimator = estimator
+        # bounce stage: target apex range (m) or None; p_rest: share of episodes that start with the ball resting on the blade
+        self.bounce = None if bounce is None else (float(bounce[0]), float(bounce[1]))
+        self.p_rest = p_rest
+        # privileged: observations end with PRIV_DIM values of the sim's truth (ball state, delays, restitution, flat error) for an
+        # asymmetric critic in training (ppo.ActorCritic(critic_dim=...)); the policy never sees them
+        self.privileged = privileged
+        # bounce stage camera: detection noise (centre, radius) in px; default CAM_CENTRE_PX, CAM_RADIUS_PX
+        self.cam_noise_px = (CAM_CENTRE_PX, CAM_RADIUS_PX) if cam_noise_px is None else tuple(cam_noise_px)
+        self.rest_ends = True  # bounce stage: a ball at rest for 0.5 s ends the episode (evaluation may switch it off)
+        if self.bounce is not None and camera_obs:
+            assert estimator == "kf3", "the bounce stage sees the ball through the 3D predictor (--estimator kf3)"
+        if estimator == "kf3":
+            from asimov_pp.estimator import KF3_PARAMS, BallKF3D
+            self.kf = BallKF3D(dt=DT, **(KF3_PARAMS if kf_params is None else kf_params))
         # extra command delay, in control steps (min, max); default 0..max_latency. Albert's arm lags ~50-65 ms more than the sim's
         self.act_latency = tuple(act_latency) if act_latency is not None else (0, max_latency)
         if estimator == "kf":
@@ -189,7 +225,7 @@ class BalanceEnv:
             self.lean = rot.as_quat()[[3, 0, 1, 2]]
         self._fdt = FdVelTimed()
         self.rng = np.random.default_rng(seed)
-        self.m = model if model is not None else build("sim")
+        self.m = model if model is not None else build("sim", bounce=self.bounce is not None)
         m = self.m
         self.d = mujoco.MjData(m)
         self.q_adr = np.array([m.joint(j).qposadr[0] for j in ARM_JOINTS])
@@ -218,7 +254,8 @@ class BalanceEnv:
         self._nom = dict(gain=m.actuator_gainprm[self.act_ids, 0].copy(), bias=m.actuator_biasprm[self.act_ids, :3].copy(),
                          frc=m.actuator_forcerange[self.act_ids].copy(), arm=m.dof_armature[self.v_adr].copy(),
                          ball_mass=float(m.body_mass[self.ball_body]), ball_inertia=m.body_inertia[self.ball_body].copy(),
-                         ball_fric=m.geom_friction[self.ball_geom].copy(), blade_fric=m.geom_friction[self.blade_geom].copy())
+                         ball_fric=m.geom_friction[self.ball_geom].copy(), blade_fric=m.geom_friction[self.blade_geom].copy(),
+                         blade_solref=m.geom_solref[self.blade_geom].copy())
         # Albert's arm as identified from a real session (tools/sysid_arm.py, albert/arm_dynamics.json): per joint kp / kd scale
         # and Coulomb friction. None: Menlo's nominal gains, no friction.
         if isinstance(arm_dyn, (str, Path)):
@@ -227,7 +264,9 @@ class BalanceEnv:
         self.arm_dyn = None if arm_dyn is None else dict(kp=np.array(arm_dyn["kp_scale"]), kd=np.array(arm_dyn["kd_scale"]),
                                                           fric=np.array(arm_dyn["friction"]))
         self._apply_arm(1.0, 1.0, 1.0, 1.0)
-        self.obs_dim, self.act_dim = OBS_DIM, 5
+        self.obs_dim, self.act_dim = (OBS_DIM if self.bounce is None else BOUNCE_OBS_DIM), 5
+        self.target, self._extra, self._drag = 0.0, np.zeros(BOUNCE_EXTRA), K_DRAG
+        self.torso_id = m.body("waist_yaw_link").id
         self._fd = FdVel()
         self.t = 0
 
@@ -340,6 +379,9 @@ class BalanceEnv:
         m.body_mass[self.ball_body] = n["ball_mass"] * s; m.body_inertia[self.ball_body] = n["ball_inertia"] * s * ir
         m.geom_friction[self.ball_geom] = n["ball_fric"] * [r.uniform(0.6, 1.4), 1, 1]
         m.geom_friction[self.blade_geom] = n["blade_fric"] * [r.uniform(0.6, 1.4), 1, 1]
+        if self.bounce is not None:  # restitution ~0.83-0.90 (rubber, ball, impact speed); drag +-20 %
+            m.geom_solref[self.blade_geom] = [BOUNCE_SOLREF[0], -r.uniform(*BOUNCE_DAMPING)]
+            self._drag = K_DRAG * r.uniform(0.8, 1.2)
         # refresh the cached constants (body_invweight0 etc.) after changing masses: with stale values the ball-paddle contact is
         # wrong and the ball hops (this alone took walking success from 100 % to 0 %). Must run before mj_resetData.
         mujoco.mj_setConst(m, self.d)
@@ -377,7 +419,15 @@ class BalanceEnv:
         mujoco.mj_forward(m, d)
         c, R = self.blade_frame()
         ang, rad = r.uniform(0, 2 * np.pi), self.ball_start[0] * np.sqrt(r.uniform())
-        pos = c + R @ [rad * np.cos(ang), rad * np.sin(ang), BALL_R + 0.0052 + 0.002 + r.uniform(0, self.ball_start[2])]
+        drop = r.uniform(0, self.ball_start[2])
+        if self.bounce is not None:
+            self.target = r.uniform(*self.bounce)
+            drop = 0.0 if r.uniform() < self.p_rest else self.target * r.uniform(0.5, 1.2)
+            self._extra = np.array([0.0, 0.0, self.target / 0.1])
+            self.n_bounces, self.apexes, self._air, self._h_max, self._vz_prev, self._rest = 0, [], False, 0.0, 0.0, 0
+            self._cam_rot = axis_angle_quat(r.normal(size=3), np.deg2rad(r.uniform(0, 0.6))) if self.domain_rand else np.array([1.0, 0, 0, 0])
+            self._cam_dp = r.normal(0, 0.003, 3) if self.domain_rand else np.zeros(3)
+        pos = c + R @ [rad * np.cos(ang), rad * np.sin(ang), BALL_R + 0.0052 + 0.002 + drop]
         d.qpos[self.ball_q:self.ball_q + 3] = pos
         d.qpos[self.ball_q + 3:self.ball_q + 7] = [1, 0, 0, 0]
         vp = np.empty(6); mujoco.mj_objectVelocity(m, d, mujoco.mjtObj.mjOBJ_GEOM, self.blade_geom, vp, 0)
@@ -411,6 +461,15 @@ class BalanceEnv:
                 self.kf.reset()
                 self.kf.measure(-self._cam_lat, p * BLADE_R)
                 self._ball_obs = self._kf_obs()
+            elif self.estimator == "kf3":
+                self.kf.reset()
+                self._blade_m = self._blade_model()
+                det = self._cam_detect()
+                if det is not None:  # the ball appears at t = 0 (dropped or put on the blade): first detection, no history
+                    self.kf.measure(0.0, *det)
+                self._ball_obs = self._kf3_obs()
+        elif self.bounce is not None:
+            self._ball_obs = self._truth_obs()
         return self._obs()
 
     def _poisson(self, rate, t0):
@@ -424,6 +483,71 @@ class BalanceEnv:
     def _kf_obs(self):
         x = self.kf.state()
         return np.zeros(4) if x is None else np.array([x[0] / BLADE_R, x[1] / BLADE_R, x[2] / 0.5, x[3] / 0.5])
+
+    # ------------------------------------------------------------------ bounce stage: 3D camera model and predictor
+    def _blade_model(self):
+        """The blade as the robot's arm model sees it (centre, rotation, velocity of the centre, angular velocity, world): the true
+        blade turned by the arm model's flat error (tilt_bias) and IMU noise, velocities with encoder noise."""
+        c, R = self.blade_frame()
+        b = self._g_bias + (self.rng.normal(0, 0.015, 2) if self.domain_rand else 0.0)
+        Rm = R
+        if np.hypot(*b) > 1e-9:
+            Rb = np.empty(9); mujoco.mju_quat2Mat(Rb, axis_angle_quat(R @ np.r_[b[1], -b[0], 0.0], float(np.hypot(*b))))
+            Rm = Rb.reshape(3, 3) @ R
+        vp = np.empty(6); mujoco.mj_objectVelocity(self.m, self.d, mujoco.mjtObj.mjOBJ_GEOM, self.blade_geom, vp, 0)
+        nz = self.rng.normal(0, 0.02, 3) if self.domain_rand else 0.0
+        return c.copy(), Rm, vp[3:] + nz, vp[:3].copy()
+
+    def _camera(self):
+        """Nominal head camera (what the robot believes: centre, rotation world <- camera) and the true one (calibration error)."""
+        tp, tR = self.d.xpos[self.torso_id], self.d.xmat[self.torso_id].reshape(3, 3)
+        o, Rc = tp + tR @ CAM_IN_TORSO, tR @ CAM_R_TORSO
+        Re = np.empty(9); mujoco.mju_quat2Mat(Re, self._cam_rot)
+        return (o, Rc), (o + self._cam_dp, Re.reshape(3, 3) @ Rc)
+
+    def _cam_detect(self):
+        """One head-camera detection of the ball: (centre in 3D, covariance) as the robot would compute it, or None (out of the
+        image). Projected through the true camera with pixel noise on the centre and the apparent radius, back-projected
+        through the nominal one; plus the slow drift of the balance stage's camera model."""
+        (o, Rc), (ot, Rt) = self._camera()
+        r, k = self.rng, self._bn["k"]
+        P = self.d.xpos[self.ball_body]
+        Pc = Rt.T @ (P - ot)
+        if Pc[2] < 0.1:
+            return None
+        rho = float(np.linalg.norm(Pc))
+        px = CAM_F * Pc[:2] / Pc[2] + [CAM_W / 2, CAM_H / 2]
+        r_px = CAM_F * BALL_R / rho
+        if not (r_px * 0.5 <= px[0] <= CAM_W - r_px * 0.5 and r_px * 0.5 <= px[1] <= CAM_H - r_px * 0.5):
+            return None  # out of the image (the ball higher than ~20 cm above the blade at Albert's head pose)
+        v = self.d.qvel[self.ball_v:self.ball_v + 3]
+        blur = float(np.linalg.norm(v)) * CAM_EXPOSURE * CAM_F / rho  # streak length, px
+        sc, sr = self.cam_noise_px
+        px = px + r.normal(0, sc * k + 0.1 * blur, 2)  # centroid of the streak: the mid-exposure position
+        r_m = max(r_px + r.normal(0, sr * k + 0.04 * blur), 3.0)  # the radius from the streak's width
+        d_cam = np.r_[(px - [CAM_W / 2, CAM_H / 2]) / CAM_F, 1.0]
+        d = Rc @ (d_cam / np.linalg.norm(d_cam))
+        from asimov_pp.estimator import detection_to_3d
+        z, Rz = detection_to_3d(o, d, r_m, CAM_F, sc + 0.1 * blur, sr + 0.04 * blur)
+        _, R = self.blade_frame()
+        z = z + R[:, :2] @ self._bn["ou"]
+        return z, Rz
+
+    def _kf3_obs(self):
+        x = self.kf.state()
+        if x is None:
+            self._extra[:2] = 0.0
+            return np.zeros(4)
+        c, R, vc, w = self._blade_m
+        rel = R.T @ (x[:3] - c)
+        vrel = R.T @ (x[3:] - vc - np.cross(w, x[:3] - c))
+        self._extra[:2] = [(rel[2] - BALL_R - BLADE_HT) / 0.1, vrel[2] / 2.0]
+        return np.array([rel[0] / BLADE_R, rel[1] / BLADE_R, vrel[0] / 0.5, vrel[1] / 0.5])
+
+    def _truth_obs(self):
+        rel, vrel = self.ball_in_blade()
+        self._extra[:2] = [(rel[2] - BALL_R - BLADE_HT) / 0.1, vrel[2] / 2.0]
+        return np.array([rel[0] / BLADE_R, rel[1] / BLADE_R, vrel[0] / 0.5, vrel[1] / 0.5])
 
     def _ball_meas(self):
         """Ball position in the blade plane as the head-camera estimator would give it (m): bias + slow drift + jitter."""
@@ -449,6 +573,9 @@ class BalanceEnv:
             self._shove_left = int(r.integers(5, 11))
         d.xfrc_applied[self.paddle_body, :3] = self._shove_f if self._shove_left > 0 else 0.0
         self._shove_left -= 1
+        if self.bounce is not None:  # air drag (constant over the control step)
+            vb = d.qvel[self.ball_v:self.ball_v + 3]
+            d.xfrc_applied[self.ball_body, :3] = -self._drag * BALL_M * float(np.linalg.norm(vb)) * vb
         self._set_base(self.t)
         for _ in range(N_SUB):
             mujoco.mj_step(m, d)
@@ -459,8 +586,11 @@ class BalanceEnv:
         speed = float(np.hypot(vrel[0], vrel[1]))
         h = rel[2] - BALL_R - BLADE_HT
         # centred, slow ball; smooth actions; the ball stays in contact (jerky paddle motion makes it hop, then it lands off-centre)
-        reward = (1.0 - min(dist / BLADE_R, 1.0)) - 0.05 * speed - self.smooth_penalty * float(np.sum((a - self._prev_a) ** 2))
-        reward -= self.air_penalty * float(h > 0.003)
+        if self.bounce is None:
+            reward = (1.0 - min(dist / BLADE_R, 1.0)) - 0.05 * speed - self.smooth_penalty * float(np.sum((a - self._prev_a) ** 2))
+            reward -= self.air_penalty * float(h > 0.003)
+        else:
+            reward = self._bounce_reward(h, dist, vrel) - self.smooth_penalty * float(np.sum((a - self._prev_a) ** 2))
         if self.home_penalty:
             reward -= self.home_penalty * float(np.sum(((d.qpos[self.q_adr] - self.home_q) / 0.35) ** 2))
         # noisy, delayed ball observation
@@ -472,7 +602,22 @@ class BalanceEnv:
                 _, R = self.blade_frame()
                 g_in = (R.T @ np.array([0, 0, -1.0]))[:2] + (r.normal(0, 0.015, 2) if self.domain_rand else 0) + self._g_bias
                 self.kf.step(now, g_in)
+            elif self.estimator == "kf3":  # predict with the blade's pose and motion from the arm model
+                self._blade_m = self._blade_model()
+                self.kf.step(now, self._blade_m)
             while self._cam_next <= now:
+                if self.estimator == "kf3":
+                    det = self._cam_detect()
+                    if det is None or (self._p_drop and r.uniform() < self._p_drop) or self._cam_next < self._gap_until:
+                        if self._p_drop and r.uniform() < 0.25 * self._p_drop:
+                            self._gap_until = self._cam_next + r.uniform(0.15, 0.4)
+                        self._cam_next += self._cam_period
+                        continue
+                    if self._p_out and r.uniform() < self._p_out:  # a misdetection: 1-3 cm off
+                        dv = r.normal(size=3); det = (det[0] + dv / np.linalg.norm(dv) * r.uniform(0.01, 0.03), det[1])
+                    self._cam_pending.append((self._cam_next, det))
+                    self._cam_next += self._cam_period
+                    continue
                 pm = self._ball_meas()
                 if self._p_drop and r.uniform() < 0.25 * self._p_drop:  # the ball unseen for a while (hand, glare)
                     self._gap_until = self._cam_next + r.uniform(0.15, 0.4)
@@ -486,23 +631,67 @@ class BalanceEnv:
                 tc, pm = self._cam_pending.pop(0)
                 if self.estimator == "kf":
                     self.kf.measure(tc, pm * BLADE_R)
+                elif self.estimator == "kf3":
+                    self.kf.measure(tc, *pm)
                 else:
                     self._ball_obs = self._fdt.update(pm, tc)
             if self.estimator == "kf":
                 self._ball_obs = self._kf_obs()
+            elif self.estimator == "kf3":
+                self._ball_obs = self._kf3_obs()
+        elif self.bounce is not None:
+            self._ball_obs = self._truth_obs()
         else:
             self._bbuf.append(self._ball_meas()); self._bbuf.pop(0)
             self._ball_obs = self._fd.update(self._bbuf[0])
         self._prev_a = a
         self._hist = np.roll(self._hist, 1, axis=0); self._hist[0] = a
-        fell = dist > BLADE_R - 0.5 * BALL_R or h < -0.01 or h > 0.10
+        if self.bounce is None:
+            fell = dist > BLADE_R - 0.5 * BALL_R or h < -0.01 or h > 0.10
+        else:  # off the blade (near its plane, outside the disc), below it, or out of reach
+            fell = (dist > BLADE_R - 0.5 * BALL_R and h < 0.02) or h < -0.03 or h > max(0.4, 3 * self.bounce[1])
+            # the ball came to rest on the blade (0.5 s): the episode ends, so holding it still is not a way to survive
+            self._rest = self._rest + 1 if (h < 0.004 and abs(vrel[2]) < 0.2) else 0
+            if self.rest_ends and self._rest >= 25 and not fell:
+                reward -= 1.0
+                return self._end(reward, dist, h, rested=True)
         bad = bool(d.warning[mujoco.mjtWarning.mjWARN_BADQACC].number)
         terminated = bool(fell or bad)
         if terminated:
             reward -= 5.0
         truncated = self.t >= self.task.max_steps
         success = bool(truncated and not terminated)
-        return self._obs(), float(reward), terminated, truncated, dict(dist=dist, fell=bool(fell), is_success=success, walking=self.walking)
+        info = dict(dist=dist, fell=bool(fell), is_success=success, walking=self.walking, h=float(h))
+        if self.bounce is not None:
+            info.update(n_bounces=self.n_bounces, apexes=list(self.apexes), target=self.target, rested=False)
+        return self._obs(), float(reward), terminated, truncated, info
+
+    def _end(self, reward, dist, h, rested):
+        info = dict(dist=dist, fell=False, is_success=False, walking=self.walking, h=float(h), n_bounces=self.n_bounces,
+                    apexes=list(self.apexes), target=self.target, rested=rested)
+        return self._obs(), float(reward), True, False, info
+
+    def _bounce_reward(self, h, dist, vrel):
+        """Bounce stage: ball over the blade centre, its energy height (apex of the current flight) near the target (a tent: holding
+        the ball still earns only the centring term), a bonus at each apex near the target, slow sideways. Also counts the bounces and records the apexes (true state)."""
+        vz = float(self.d.qvel[self.ball_v + 2])
+        air = h > 0.004
+        if self._vz_prev < -0.2 and vz > 0.1 and h < 0.03:  # the ball turned up near the blade (contacts last < 1 control step)
+            self.n_bounces += 1
+        bonus = 0.0
+        if air:
+            self._h_max = max(self._h_max, h)
+            if self._vz_prev > 0 >= vz and h > 0.01:  # apex
+                self.apexes.append(float(h))
+                tol = 0.25 * self.target + 0.005
+                bonus = 2.0 * np.exp(-((h - self.target) / tol) ** 2) * (1.0 - min(dist / BLADE_R, 1.0))
+        self._air, self._vz_prev = air, vz
+        E = h + vz * vz / (2 * G) if air else max(h, 0.0)
+        # a tent from 0 (ball at rest) to 1 (energy at the target) to 0 (twice the target): a gradient from balancing to bouncing
+        q = max(0.0, 1.0 - abs(E - self.target) / self.target)
+        centre = 1.0 - min(dist / BLADE_R, 1.0)
+        vh = float(np.linalg.norm(self.d.qvel[self.ball_v:self.ball_v + 2]))
+        return 0.4 * centre + 1.2 * q * (0.5 + 0.5 * centre) + bonus - 0.1 * vh
 
     def _obs(self):
         d = self.d
@@ -513,10 +702,22 @@ class BalanceEnv:
         if self.domain_rand:  # IMU orientation error ~1 deg
             g_blade = g_blade + self.rng.normal(0, 0.015, 3)
         gyro, acc = self._imu(self.t)
+        extra = () if self.bounce is None else (self._extra,)
         return np.concatenate([
             self._ball_obs, g_blade, gyro * 0.25, acc / G,
-            (d.qpos[self.q_adr] - self.home_q) / 0.3, d.qvel[self.v_adr] * 0.1, self._clock[self.t], self._hist.ravel(),
+            (d.qpos[self.q_adr] - self.home_q) / 0.3, d.qvel[self.v_adr] * 0.1, self._clock[self.t], *extra, self._hist.ravel(),
+            *((self._priv(),) if self.privileged else ()),
         ]).astype(np.float32)
+
+    def _priv(self):
+        """The sim's truth for the critic (PRIV_DIM values)."""
+        rel, vrel = self.ball_in_blade()
+        _, R = self.blade_frame()
+        damp = -self.m.geom_solref[self.blade_geom][1] if self.bounce is not None else 25.0
+        return np.r_[rel[0] / BLADE_R, rel[1] / BLADE_R, (rel[2] - BALL_R - BLADE_HT) / 0.1, vrel[0] / 0.5, vrel[1] / 0.5,
+                     vrel[2] / 2.0, R.T @ np.array([0, 0, -1.0]), self._act_delay / 4.0,
+                     (self._cam_lat / 0.16) if self.camera_obs else 0.0, (damp - 25.0) / 7.0, self._g_bias * 10.0,
+                     self._drag / K_DRAG - 1.0]
 
     # for rendering on the full robot
     def base_state(self):
