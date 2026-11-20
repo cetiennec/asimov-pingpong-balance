@@ -20,3 +20,4 @@ outputs/*
 !outputs/albert_v3_final/
 !outputs/albert_v2A/
 outputs/**/last.pt
+data/lerobot/
