@@ -77,7 +77,7 @@ action = policy(obs)                                       # obs: 40 floats -> 5
 | `albert/` | the real robot through menlo-sdk: `run_policy.py`, calibrations (camera, arm offsets, latency), free-standing (`stand_test.py`, `sim_freestand.py`), simulated robots, safety (`common.py`). Guides: `albert/README.md`, `albert/ONBOARD.md` |
 | `tools/` | arm system identification, predictor tuning, session statistics, robot-matched evaluation, a mock robot that runs the real-robot code paths |
 | `hardware/` | paddle holder (`paddle_holder.py` → `.stl`; v5 follows the flared handle, has a flat print face and no sharp inside corners; v4 kept) |
-| `data/` | run logs of the sessions on Albert (CSV at 50 Hz: ball estimate, arm, actions; `*_frames.csv`: every camera detection). As a LeRobot dataset: [cetiennec/asimov-pingpong-albert](https://huggingface.co/datasets/cetiennec/asimov-pingpong-albert) (`tools/export_lerobot.py`) |
+| `data/` | run logs of the sessions on Albert (CSV at 50 Hz: ball estimate, arm, actions; `*_frames.csv`: every camera detection). As a LeRobot dataset: [cetiennec/asimov-pingpong-albert](https://huggingface.co/datasets/cetiennec/asimov-pingpong-albert) (`tools/export_lerobot.py`). Runs since 2026-11-20 also record the raw head camera, exported with `--video` (kept local: it shows people) |
 | `videos/` | simulation videos |
 | `train_*.sh` | training commands |
 

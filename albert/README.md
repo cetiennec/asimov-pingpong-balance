@@ -40,7 +40,11 @@ python -m albert.stand_test --supported --hold 20                               
 
 Before the ball goes on, the blade is levelled for Albert's actual lean (arm model + IMU, `--no-level-start` to skip). Put the
 ball on; it starts by itself and waits again when the ball is lost. Each run writes `<log>.csv` (50 Hz), `<log>_frames.csv`
-(every camera detection), `<log>.jsonl` (menlo-sdk recording) and `<log>_detect.mp4` (what the detector saw).
+(every camera detection), `<log>.jsonl` (menlo-sdk recording), `<log>_camera.mp4` + `_camera.csv` (the raw head camera,
+640x360, every frame with its time; `--camera-video ''` to skip) and `<log>_detect.mp4` (what the detector saw, with its masks).
+At the end of a run on the Mac (or after `onboard.sh` for a run on the Pi), every run with a camera recording is exported to
+the local LeRobot dataset `data/lerobot/asimov-pingpong-albert-camera` (`--no-lerobot` to skip). The camera frames show the
+room and the people in it: they stay local.
 
 After a run: `python -m tools.session_stats <log>.csv`, `python -m tools.tune_kf <log>.csv` (predictor on real data).
 
@@ -54,5 +58,6 @@ After a run: `python -m tools.session_stats <log>.csv`, `python -m tools.tune_kf
 | `stand_test.py`, `sim_freestand.py` | standing without the gantry's support: on Albert / simulated (with a gantry rope) |
 | `sim_robot.py` | simulated Albert (menlo-sdk-shaped API, rendered head camera, identified arm) |
 | `calibrate_camera.py`, `teach_flat.py`, `measure_latency.py`, `sysid_arm_test.py`, `aim_sweep.py`, `check_joints.py`, `status.py`, `record_frames.py`, `record_demo.py` | calibrations and checks |
+| `frame_recorder.py` | the raw camera recording (a low-priority ffmpeg process; frames dropped, never the loop slowed) |
 | `onboard.sh`, [ONBOARD.md](ONBOARD.md) | running on Albert's Pi from the Mac |
 | `*.json` | Albert's calibrations (camera, arm offsets, latency, arm dynamics); `sim_camera.json`: the simulated camera; history in `calibration_history/` |

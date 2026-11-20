@@ -17,4 +17,7 @@ MOD=$1; shift
 ssh -t "$PI" "cd $DIR && OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 .venv/bin/python -u -m $MOD $*" || true
 mkdir -p logs/onboard
 rsync -az -e "ssh -o BatchMode=yes" "$PI:$DIR/logs/" logs/onboard/ && echo "logs copied to logs/onboard/"
+if [ "$MOD" = "albert.run_policy" ]; then  # the run's camera frames -> the local LeRobot dataset (on the Mac, not the Pi)
+  .venv/bin/python -c "from tools.export_lerobot import export_after_run; export_after_run()" || true
+fi
 rsync -azu -e "ssh -o BatchMode=yes" "$PI:$DIR/albert/*.json" albert/ 2>/dev/null && echo "calibrations synced back (newer wins)"

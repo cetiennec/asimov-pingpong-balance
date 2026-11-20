@@ -198,3 +198,20 @@ def detect_roi(rgb, ball, roi, **kw):
         return detect(rgb, ball, **kw)
     det = detect(rgb[y0:y1, x0:x1], ball, **kw)
     return None if det is None else (det[0] + x0, det[1] + y0, det[2])
+
+
+def ball_on_blade_cov(cam, px, head_pos, head_R, blade_c, blade_R, sigma_px=2.0):
+    """The ball on the blade (u, w) and its 2x2 covariance (m^2) for a detection noise of sigma_px pixels, from the camera
+    geometry: the ray meets the blade at a slant, so the error is larger along the viewing direction. (None, None) if no hit."""
+    px = np.asarray(px, float)
+    uw = cam.ball_on_blade(px, head_pos, head_R, blade_c, blade_R)
+    if uw is None:
+        return None, None
+    J = []
+    for d in (np.array([2.0, 0.0]), np.array([0.0, 2.0])):
+        a, b = cam.ball_on_blade(px + d, head_pos, head_R, blade_c, blade_R), cam.ball_on_blade(px - d, head_pos, head_R, blade_c, blade_R)
+        if a is None or b is None:
+            return np.asarray(uw), None
+        J.append((np.asarray(a) - np.asarray(b)) / 4.0)
+    J = np.array(J).T  # d(u, w) / d(pixel x, y)
+    return np.asarray(uw), sigma_px ** 2 * J @ J.T

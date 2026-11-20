@@ -140,8 +140,12 @@ class ObsBuilder:
         self._R = self.kin.blade_frame()[1]
         self.kf.step(t, (self._R.T @ np.array([0.0, 0.0, -1.0]))[:2])
 
-    def measure(self, t_cap, uw):
-        return self.kf.measure(t_cap, uw)
+    def measure(self, t_cap, uw, R=None):
+        return self.kf.measure(t_cap, uw, R)
+
+    def start(self, t1, uw1, t2, uw2):
+        """Start the predictor from two detections (position from the second, velocity from both)."""
+        self.kf.reset(); self.kf.start(t1, uw1, t2, uw2)
 
     def ball(self):
         return self.kf.state()

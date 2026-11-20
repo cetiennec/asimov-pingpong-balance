@@ -23,7 +23,8 @@ python -m albert.status --mode livekit                                          
 ```
 
 `onboard.sh` syncs the code (and the calibrations, newer file wins, both ways), runs the script on the Pi over `ssh -t`
-(prompts work), then copies the Pi's `logs/` to `logs/onboard/`.
+(prompts work), then copies the Pi's `logs/` to `logs/onboard/` and, after a `run_policy`, rebuilds the local LeRobot dataset
+with the camera on the Mac.
 
 Safety is the same as on the Mac, plus: a dropped ssh session ends the script like Ctrl+C (SIGHUP is handled): the arm glides
 home and Albert is handed to Menlo's balance controller (`stand()` → `balance()`). A hard crash of the Python process (kill -9,
@@ -42,3 +43,5 @@ out of memory) is the one case still left to Asimov Edge, which damps 2 s after 
 - Measure the camera latency onboard (`albert.measure_latency`): it is 105 ms over Wi-Fi to the Mac; onboard it should be
   lower, and the predictor uses it.
 - Check the loop rate of the first run with the numpy policy (`python -m tools.session_stats` on the copied log).
+- Check the camera recording's cost on the Pi: the run prints `camera recording: ... N dropped` (H.264 ultrafast, one
+  thread, niced). If the loop rate drops, `--camera-video ''` turns it off.

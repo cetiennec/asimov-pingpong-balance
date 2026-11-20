@@ -32,7 +32,7 @@ import time
 
 import numpy as np
 
-from albert.ball_camera import CameraModel, blade_roi, debug_image, detect, detect_roi
+from albert.ball_camera import CameraModel, ball_on_blade_cov, blade_roi, debug_image, detect, detect_roi
 from albert.common import TAUGHT_GRAVITY, TiltGuard, lean_deg, level_dq, look_at  # noqa: F401
 from albert.common import (graceful_signals, CENTRED_STANCE, STALL_S, allow_link_hiccups, state_age, unique_log, to_balance, take_joints, hand_back, BalanceOnExit, safe_pose, FLAT_HOME_FW, HOME, TiltGuard, ACTION_SCALE, ARM_IDX, ARM_SIGN, CAMERA_LATENCY_S, KD, KP, NECK_PITCH, NECK_PITCH_IDX, NECK_YAW, NECK_YAW_IDX,
                            PERIOD, WAIST_IDX, Kinematics, ObsBuilder, fw_to_mjcf, load_calibration, mjcf_to_fw)
@@ -69,6 +69,11 @@ def main():
     p.add_argument("--place", type=float, nargs=2, default=(0.03, -0.02), help="--sim only: where the ball is put (u, w), m")
     p.add_argument("--level", action="store_true", help="while waiting, level the blade by IK (off: the policy was trained from the home pose)")
     p.add_argument("--debug-video", default=None, help="real robot: what the detector saw (frame | masks); default: <log>_detect.mp4, '' to skip")
+    p.add_argument("--camera-video", default=None, help="raw head-camera frames (halved, H.264) for the LeRobot dataset; default: "
+                   "<log>_camera.mp4 (+ _camera.csv: frame times), '' to skip")
+    p.add_argument("--lerobot", action=argparse.BooleanOptionalAction, default=None,
+                   help="after the run, rebuild the local LeRobot dataset with the camera (default: on for real runs on the Mac; "
+                        "on Albert's Pi onboard.sh does it on the Mac)")
     p.add_argument("--truth-ball", action="store_true", help="--sim only, debugging: use the true ball position, not the camera")
     p.add_argument("--kick", type=float, default=0.0, help="--sim only: flick the ball every 3 s with this speed (m/s)")
     p.add_argument("--freestand", action="store_true", help="--sim only: Albert standing on the floor (no gantry), legs held by PD")
@@ -98,6 +103,8 @@ def main():
         allow_link_hiccups()
     if a.debug_video is None:
         a.debug_video = a.log.replace(".csv", "_detect.mp4")
+    if a.camera_video is None:
+        a.camera_video = a.log.replace(".csv", "_camera.mp4")
     import os
     os.makedirs(os.path.dirname(a.log) or ".", exist_ok=True)
 
@@ -147,6 +154,12 @@ def main():
         _session(a, robot, calib, cam, ball, policy, kin, kin_cam, obs_b, gains, q_lo, q_hi, frames, rows, frame_rows, save_logs)
     finally:
         save_logs()
+        from albert.frame_recorder import close_all
+        close_all()
+    import platform
+    if a.lerobot if a.lerobot is not None else (not a.sim and platform.machine() not in ("aarch64", "armv7l")):
+        from tools.export_lerobot import export_after_run
+        export_after_run(os.path.dirname(os.path.abspath(a.log)))  # Albert is with Menlo's balance controller by now
 
 
 
@@ -217,7 +230,9 @@ def _session(a, robot, calib, cam, ball, policy, kin, kin_cam, obs_b, gains, q_l
             return st
 
         dbg = []
-        det_out = {"uw": None, "t_cap": None, "frame": None, "seen": False}
+        from albert.frame_recorder import FrameRecorder
+        rec = FrameRecorder(a.camera_video) if a.camera_video else None
+        det_out = {"uw": None, "R": None, "t_cap": None, "frame": None, "seen": False}
         det_times = []
         det_stop = threading.Event()
 
@@ -256,9 +271,11 @@ def _session(a, robot, calib, cam, ball, policy, kin, kin_cam, obs_b, gains, q_l
                 det = detect_roi(img, ball, roi, step=4)
                 det_times.append(time.perf_counter() - t_d)
                 time.sleep(0)
-                uw = None if det is None else cam.ball_on_blade(np.array(det[:2]), *kin_cam.head_pose(), *kin_cam.blade_frame())
+                uw, Rz = (None, None) if det is None else ball_on_blade_cov(cam, det[:2], *kin_cam.head_pose(), *kin_cam.blade_frame())
                 with det_lock:
-                    det_out.update(uw=uw, t_cap=t_cap, frame=f, seen=uw is not None)
+                    det_out.update(uw=uw, R=Rz, t_cap=t_cap, frame=f, seen=uw is not None)
+                if rec:
+                    rec.add(img, f.received_at, t_cap)
                 if a.debug_video and len(dbg) < 22 * 300:  # keep what the detector saw (frame | masks), up to 5 min
                     dbg.append((debug_image(img, ball, step=4), uw, t_cap))
 
@@ -273,13 +290,16 @@ def _session(a, robot, calib, cam, ball, policy, kin, kin_cam, obs_b, gains, q_l
                     q = np.array(st.joint_pos)
                     kin_cam.update(fw_to_mjcf(q[ARM_IDX]), waist=q[WAIST_IDX], neck_yaw=q[NECK_YAW_IDX], neck_pitch=q[NECK_PITCH_IDX], base_quat=st.quat)
                     t_d = time.perf_counter()
+                    img = f.to_numpy()
+                    if rec:
+                        rec.add(img, f.received_at, t_cap)
                     roi = blade_roi(cam, *kin_cam.head_pose(), *kin_cam.blade_frame(), BLADE_R + 0.04, step=3) if a.roi else None
-                    det = detect_roi(f.to_numpy(), ball, roi, step=3)
+                    det = detect_roi(img, ball, roi, step=3)
                     det_times.append(time.perf_counter() - t_d)
-                    uw = None if det is None else cam.ball_on_blade(np.array(det[:2]), *kin_cam.head_pose(), *kin_cam.blade_frame())
-                    det_out.update(uw=uw, t_cap=t_cap, frame=f)
+                    uw, Rz = (None, None) if det is None else ball_on_blade_cov(cam, det[:2], *kin_cam.head_pose(), *kin_cam.blade_frame())
+                    det_out.update(uw=uw, R=Rz, t_cap=t_cap, frame=f)
             with det_lock:
-                return det_out["uw"], det_out["frame"], det_out["t_cap"]
+                return det_out["uw"], det_out["frame"], det_out["t_cap"], det_out["R"]
 
         if not a.sim:
             threading.Thread(target=detector, daemon=True).start()
@@ -307,6 +327,7 @@ def _session(a, robot, calib, cam, ball, policy, kin, kin_cam, obs_b, gains, q_l
         if guard_ctx and not guard_ctx.running:
             guard_ctx.__enter__()
         mode, seen, n_catch, t_start_bal = "wait", 0, 0, 0.0
+        prev_det = last_det = None  # the last two on-blade detections while waiting: the predictor starts from both
         last_logged = None
         print(f"detector: {'blade region only (--roi)' if a.roi else 'whole frame'}")
         hand_wait = 0
@@ -340,10 +361,10 @@ def _session(a, robot, calib, cam, ball, policy, kin, kin_cam, obs_b, gains, q_l
                 q_arm = fw_to_mjcf(q[ARM_IDX])
                 qd_arm = np.array([st.joints[i].vel or 0.0 for i in ARM_IDX]) / ARM_SIGN
                 quat = st.quat if st.quat is not None else (1, 0, 0, 0)  # IMU orientation (the body leans on the gantry)
-                uw, f, t_cap = ball_estimate()
+                uw, f, t_cap, det_R = ball_estimate()
                 t_now = st.received_at  # the clock of the frames' capture times (monotonic on Albert, simulated time in sim)
                 if a.truth_ball:
-                    uw, t_cap = robot.ball_truth(), t_now
+                    uw, t_cap, det_R = robot.ball_truth(), t_now, None
                 fresh = uw is not None and t_cap != last_ft
                 new_frame = t_cap is not None and t_cap != last_logged
                 accepted = None
@@ -363,13 +384,18 @@ def _session(a, robot, calib, cam, ball, policy, kin, kin_cam, obs_b, gains, q_l
                         seen = seen + 1 if on else 0
                         if on:
                             last_uw = np.asarray(uw)
-                    if seen >= 2:  # the ball is on the blade: go, the predictor starts from this frame
+                            prev_det, last_det = last_det, (t_cap, np.asarray(uw))
+                    if seen >= 2:  # the ball is on the blade: go; the predictor starts from the two detections (position + velocity)
                         mode, n_catch, t_start_bal, last_seen = "balance", n_catch + 1, t, t
-                        obs_b.reset(); obs_b.measure(t_cap, uw); obs_b.tick(t_now, q_arm, quat, q[WAIST_IDX])
+                        if prev_det is not None and 0 < last_det[0] - prev_det[0] < 0.3:
+                            obs_b.start(prev_det[0], prev_det[1], last_det[0], last_det[1])
+                        else:
+                            obs_b.reset(); obs_b.measure(t_cap, uw)
+                        obs_b.tick(t_now, q_arm, quat, q[WAIST_IDX])
                         print(f"BALANCE #{n_catch} at t={t:.1f} s (ball at u={100*last_uw[0]:+.1f}, w={100*last_uw[1]:+.1f} cm)")
                 else:
                     if fresh:
-                        accepted = obs_b.measure(t_cap, uw)  # gated: a detection far from the prediction is ignored
+                        accepted = obs_b.measure(t_cap, uw, det_R)  # gated: a detection far from the prediction is ignored
                     if fresh and accepted:
                         last_seen = t
                     x = obs_b.ball()
@@ -441,6 +467,8 @@ def _session(a, robot, calib, cam, ball, policy, kin, kin_cam, obs_b, gains, q_l
             print("arm back to its starting pose (3 s)")
             hand_back(robot, start)
 
+    if rec:
+        print(rec.close(), flush=True)
     if not a.sim and a.debug_video and dbg:
         import imageio
         from PIL import Image, ImageDraw

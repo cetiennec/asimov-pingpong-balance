@@ -10,6 +10,7 @@ import builtins
 import contextlib
 import runpy
 import sys
+import os
 import time
 import types
 
@@ -71,6 +72,34 @@ def main():
                 frozen.clear(); st_.age_s = 0.0
                 return st_
             r.get_state = gs
+            # a menlo-sdk-shaped recording (<log>.jsonl: states and sent trajectories), so the mock's runs export to LeRobot
+            import json
+            rec = {"fh": None}
+            gs_inner, traj_inner = r.get_state, r.trajectory
+            def gs_rec():
+                st_ = gs_inner()
+                if rec["fh"]:
+                    rec["fh"].write(json.dumps({"kind": "state", "t": st_.received_at, "joints": [{"pos": j.pos} for j in st_.joints],
+                                                "gravity": list(st_.gravity), "gyro": list(st_.gyro)}) + "\n")
+                return st_
+            def traj_rec(pos, **k):
+                if rec["fh"]:
+                    rec["fh"].write(json.dumps({"kind": "sent", "name": "trajectory", "t": r.t,
+                                                "command": {"positions": [float(x) for x in pos]}}) + "\n")
+                traj_inner(pos, **k)
+            r.get_state, r.trajectory = gs_rec, traj_rec
+
+            @contextlib.contextmanager
+            def record(path):
+                if path:
+                    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+                    rec["fh"] = open(path, "w")
+                try:
+                    yield
+                finally:
+                    if rec["fh"]:
+                        rec["fh"].close(); rec["fh"] = None
+            r.record = record
             return r
 
     fake = types.ModuleType("menlo.asimov"); fake.Robot = MockRobot

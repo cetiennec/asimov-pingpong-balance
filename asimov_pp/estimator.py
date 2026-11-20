@@ -40,7 +40,8 @@ class BallKF:
         self.n = 4 if bias_noise is None else 6
         self.b, self.Pb = np.zeros(2), np.eye(2) * bias_init ** 2
         self.huber, self.roll_gain, self.g_bias, self.reset_after = huber, roll_gain, np.asarray(g_bias, float), reset_after
-        self.n_hist = int(history_s / dt) + 2
+        self.n_hist = 2 * int(history_s / dt) + 4  # control steps + the corrections inserted at their capture times
+        self.pending = None  # after a drift reset: the first detection, waiting for a consistent second one
         self.reset()
 
     def reset(self):
@@ -49,6 +50,7 @@ class BallKF:
         self.x = None                     # [u, w, vu, vw] (+ [bias_u, bias_w])
         self.P = None
         self.t = None
+        self.pending = None
         self.hist = deque(maxlen=self.n_hist)  # (t, x, P, input, dt) after each prediction step
         self.n_rejected = 0
 
@@ -84,9 +86,21 @@ class BallKF:
         P = F @ P @ F.T + self._Q()
         return x, P
 
-    def _init_state(self, z):
-        x = np.r_[z, 0.0, 0.0]
-        P = np.diag([self.r ** 2, self.r ** 2, 0.15 ** 2, 0.15 ** 2])
+    def _predict_dt(self, x, P, inp, dt):
+        """One prediction over an arbitrary dt (the stored nominal dt is restored)."""
+        if dt <= 0:
+            return x, P
+        dt_nom, self.dt = self.dt, dt
+        try:
+            return self._predict(x, P, inp)
+        finally:
+            self.dt = dt_nom
+
+    def _init_state(self, z, v=None):
+        """From a detection; with v (from two detections) the velocity is known to ~ r * sqrt(2) / dt_frames."""
+        x = np.r_[z, (0.0, 0.0) if v is None else v]
+        sv = 0.15 if v is None else 0.05
+        P = np.diag([self.r ** 2, self.r ** 2, sv ** 2, sv ** 2])
         if self.n == 6:
             x = np.r_[x, self.b]
             P = np.block([[P, np.zeros((4, 2))], [np.zeros((2, 4)), self.Pb]])
@@ -109,41 +123,72 @@ class BallKF:
         self.dt = dt_nom
         self.t = t
 
-    def measure(self, t_cap, z):
-        """A camera position z = (u, w) in m, captured at t_cap. Returns True if accepted."""
+    def start(self, t1, z1, t2, z2):
+        """(Re)start from two detections (t1 < t2): position from the second, velocity from both (the ball is rarely still)."""
+        z1, z2 = np.asarray(z1, float), np.asarray(z2, float)
+        v = np.clip((z2 - z1) / max(t2 - t1, 1e-3), -0.6, 0.6) if t2 > t1 else None
+        self._start_at(t2, z2, v)
+
+    def _start_at(self, t_cap, z, v=None):
+        self.x, self.P = self._init_state(z, v)
+        self.hist.clear(); self.hist.append((t_cap, self.x.copy(), self.P.copy(), np.zeros(4), self.dt))
+        self.t = t_cap  # the next step() catches up to the present
+        self.pending, self.n_rejected = None, 0
+
+    def measure(self, t_cap, z, R=None):
+        """A camera position z = (u, w) in m, captured at t_cap; R: its 2x2 covariance (m^2), default meas_noise^2 I.
+        Returns True if accepted."""
         z = np.asarray(z, float)
         if self.x is None or not self.hist:
-            self.x, self.P = self._init_state(z)
-            self.hist.clear(); self.hist.append((t_cap, self.x.copy(), self.P.copy(), np.zeros(4), self.dt))
-            self.t = t_cap  # the next step() catches up to the present
-            return True
+            if self.pending is None:
+                if self.t is None:  # nothing yet at all (first frame of an episode): start from it
+                    self._start_at(t_cap, z)
+                    return True
+                self.pending = (t_cap, z)  # after a drift: wait for a second, consistent detection
+                return False
+            t1, z1 = self.pending
+            if t_cap > t1 and np.linalg.norm(z - z1) / (t_cap - t1) < 1.0 and t_cap - t1 < 0.3:
+                self.start(t1, z1, t_cap, z)
+                return True
+            self.pending = (t_cap, z)
+            return False
         H = np.zeros((2, self.n)); H[0, 0] = H[1, 1] = 1.0
         hist = list(self.hist)
         k = max(i for i in range(len(hist)) if hist[i][0] <= t_cap) if hist[0][0] <= t_cap else 0
         if hist[k][1] is None:
             return False
         x, P = hist[k][1].copy(), hist[k][2].copy()
-        S = H @ P @ H.T + np.eye(2) * self.r ** 2
+        # bring the stored state from its step time exactly to the capture time (up to one control step later)
+        lag = t_cap - hist[k][0]
+        nxt = hist[k + 1] if k + 1 < len(hist) else None
+        if 1e-4 < lag and nxt is not None:
+            x, P = self._predict_dt(x, P, nxt[3], lag)
+        Rz = np.eye(2) * self.r ** 2 if R is None else np.asarray(R, float) + np.eye(2) * (0.5e-3) ** 2
+        S = H @ P @ H.T + Rz
         y = z - H @ x
         d2 = float(y @ np.linalg.solve(S, y))
         if d2 > self.gate ** 2:
             self.n_rejected += 1
-            if self.n_rejected >= self.reset_after:  # the prediction drifted away: trust the camera again
-                self.reset(); return self.measure(t_cap, z)
+            if self.n_rejected >= self.reset_after:  # the prediction drifted away: restart from the camera, but only on two
+                t_keep = self.t                       # consistent detections (one could be the outlier itself)
+                self.reset(); self.t = t_keep
+                self.pending = (t_cap, z)
             return False
         self.n_rejected = 0
         if self.huber is not None and d2 > self.huber ** 2:  # a doubtful measurement: count it, but less
-            S = H @ P @ H.T + np.eye(2) * self.r ** 2 * (np.sqrt(d2) / self.huber)
+            S = H @ P @ H.T + Rz * (np.sqrt(d2) / self.huber)
         K = P @ H.T @ np.linalg.inv(S)
         x, P = x + K @ y, (np.eye(self.n) - K @ H) @ P
-        # replay the stored inputs from the capture time up to now
-        new = hist[:k] + [(hist[k][0], x.copy(), P.copy(), hist[k][3], hist[k][4])]
-        dt_nom = self.dt
-        for t_i, _, _, inp, dt_i in hist[k + 1:]:
-            self.dt = dt_i
-            x, P = self._predict(x, P, inp)
+        # replay from the capture time up to now: first the rest of the step the frame fell in, then the stored steps
+        new = hist[:k + 1] + [(t_cap, x.copy(), P.copy(), hist[k][3], 0.0)]
+        rest = hist[k + 1:]
+        if rest:
+            t_i, _, _, inp, dt_i = rest[0]
+            x, P = self._predict_dt(x, P, inp, max(t_i - t_cap, 0.0))
             new.append((t_i, x.copy(), P.copy(), inp, dt_i))
-        self.dt = dt_nom
+            for t_i, _, _, inp, dt_i in rest[1:]:
+                x, P = self._predict_dt(x, P, inp, dt_i)
+                new.append((t_i, x.copy(), P.copy(), inp, dt_i))
         self.hist = deque(new, maxlen=self.n_hist)
         self.x, self.P = x, P
         return True

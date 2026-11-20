@@ -6,11 +6,15 @@ Per frame:
   action               (5)   the policy's action (right-arm joint increments / 0.03 rad, in [-1, 1])
   action.arm_target    (5)   the right-arm joint targets actually sent (firmware, rad)
   balancing            (1)   1 while the policy balances the ball, 0 while waiting for it
+  observation.images.head    the head camera (640x360), the latest frame received at each step: what the policy could see.
+                             Only with --video, from runs that recorded <log>_camera.mp4 (run_policy does, since 2026-11-20)
 Joint states and commands come from the menlo-sdk recording (<log>.jsonl), the ball and the actions from the run log
-(<log>.csv); the two clocks are aligned on the right-arm angles both contain. No camera frames: these runs kept only a debug
-video (which shows people); new runs can save raw frames.
+(<log>.csv); the two clocks are aligned on the right-arm angles both contain.
 
     uv run --with "lerobot[dataset]" python -m tools.export_lerobot --push cetiennec/asimov-pingpong-albert
+    uv run --with "lerobot[dataset]" python -m tools.export_lerobot --video logs     # runs with camera -> ...-camera dataset
+
+The camera frames show the room and the people in it: a --video dataset is pushed private unless --public.
 """
 from __future__ import annotations
 
@@ -65,15 +69,41 @@ def align(csv_t, csv_q_fw, st_t, st_q):
     return best[1], float(np.sqrt(best[0]))
 
 
-def episodes(roots):
+class CameraFrames:
+    """The run's camera recording, read forward: at(t) -> the latest frame received at or before t (None before the first)."""
+
+    def __init__(self, mp4):
+        import imageio_ffmpeg
+        self.t = np.genfromtxt(mp4[:-4] + ".csv", delimiter=",", names=True)["received_at"]
+        self.reader = imageio_ffmpeg.read_frames(mp4)
+        meta = next(self.reader)
+        self.w, self.h = meta["size"]
+        self.k, self.img = -1, None
+
+    def at(self, t):
+        want = int(np.searchsorted(self.t, t, side="right")) - 1
+        while self.k < want:
+            try:
+                buf = next(self.reader)
+            except StopIteration:
+                break
+            self.k += 1
+            self.img = np.frombuffer(buf, np.uint8).reshape(self.h, self.w, 3)
+        return self.img if want >= 0 else None
+
+
+def episodes(roots, video=False):
     import sys
     sys.path.insert(0, os.getcwd())
     from albert.common import mjcf_to_fw
+    seen = set()  # (name, size): the same run copied to several folders is exported once; two runs both named run.csv are not
     for csv in sorted(sum((glob.glob(os.path.join(r, "*.csv")) for r in roots), [])):
-        if csv.endswith("_frames.csv"):
+        key = (os.path.basename(csv), os.path.getsize(csv))
+        if csv.endswith(("_frames.csv", "_camera.csv")) or key in seen:
             continue
         rec = csv[:-4] + ".jsonl"
-        if not os.path.exists(rec):
+        cam = csv[:-4] + "_camera.mp4"
+        if not os.path.exists(rec) or (video and not os.path.exists(cam)):
             continue
         r = np.genfromtxt(csv, delimiter=",", names=True, dtype=None, encoding=None)
         if "balancing" not in r.dtype.names or len(r) < 100:
@@ -95,15 +125,23 @@ def episodes(roots):
                       np.array([np.interp(tt, st_t, st_w[:, k]) for k in range(3)]).T]
         idx = np.clip(np.searchsorted(ct, tt, side="right") - 1, 0, len(ct) - 1)
         target = cmd[idx][:, ARM]
-        yield os.path.basename(csv)[:-4], dict(state=state, ball=ball, action=act, target=target, balancing=bal), rms
+        seen.add(key)
+        e = dict(state=state, ball=ball, action=act, target=target, balancing=bal)
+        if video:  # the camera's clock is the run's state clock (received_at): no alignment needed
+            e["camera"], e["t_state"] = CameraFrames(cam), r["t_state"].astype(float)
+        yield os.path.basename(csv)[:-4], e, rms
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--data", nargs="+", default=sorted(glob.glob("data/20*")))
-    p.add_argument("--out", default="data/lerobot/asimov-pingpong-albert")
+    p.add_argument("--data", nargs="+", default=["logs", "logs/onboard"] + sorted(glob.glob("data/20*")),
+                   help="folders of run logs (default: logs/, logs/onboard/, data/<day>/)")
+    p.add_argument("--out", default=None, help="default: data/lerobot/asimov-pingpong-albert[-camera]")
+    p.add_argument("--video", action="store_true", help="with the head camera: only runs that recorded <log>_camera.mp4")
     p.add_argument("--push", default=None, help="Hugging Face dataset repo id to push to")
+    p.add_argument("--public", action="store_true", help="--video --push: make it public (the frames show people)")
     a = p.parse_args()
+    a.out = a.out or "data/lerobot/asimov-pingpong-albert" + ("-camera" if a.video else "")
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
     features = {
         "observation.state": {"dtype": "float32", "shape": (31,),
@@ -113,17 +151,36 @@ def main():
         "action.arm_target": {"dtype": "float32", "shape": (5,), "names": [FW_JOINTS[i] for i in ARM]},
         "balancing": {"dtype": "float32", "shape": (1,), "names": ["balancing"]},
     }
+    eps = list(episodes(a.data, video=a.video))
+    if not eps:
+        raise SystemExit("no run with a robot recording" + (" and a camera recording" if a.video else "") + f" in {a.data}")
+    if a.video:
+        h, w = eps[0][1]["camera"].h, eps[0][1]["camera"].w
+        features["observation.images.head"] = {"dtype": "video", "shape": (h, w, 3), "names": ["height", "width", "channels"]}
     if os.path.exists(a.out):
         shutil.rmtree(a.out)
     ds = LeRobotDataset.create(repo_id=a.push or "local/asimov-pingpong-albert", fps=50, features=features, root=a.out,
-                               robot_type="asimov_1", use_videos=False)
+                               robot_type="asimov_1", use_videos=a.video, streaming_encoding=a.video)
     n_ep = 0
-    for name, e, rms in episodes(a.data):
+    for name, e, rms in eps:
         n = len(e["action"])
+        if a.video:
+            cam = e["camera"]
+            if (cam.h, cam.w) != (h, w):
+                print(f"skipped {name}: camera {cam.w}x{cam.h}, the dataset's is {w}x{h}")
+                continue
+            first = None
         for k in range(n):
-            ds.add_frame({"observation.state": e["state"][k].astype(np.float32), "observation.ball": e["ball"][k].astype(np.float32),
-                          "action": e["action"][k].astype(np.float32), "action.arm_target": e["target"][k].astype(np.float32),
-                          "balancing": e["balancing"][k:k + 1].astype(np.float32), "task": TASK})
+            fr = {"observation.state": e["state"][k].astype(np.float32), "observation.ball": e["ball"][k].astype(np.float32),
+                  "action": e["action"][k].astype(np.float32), "action.arm_target": e["target"][k].astype(np.float32),
+                  "balancing": e["balancing"][k:k + 1].astype(np.float32), "task": TASK}
+            if a.video:
+                img = cam.at(e["t_state"][k])
+                if img is None:  # before the first frame arrived: the first frame (steps before the camera started)
+                    first = first if first is not None else cam.at(cam.t[0])
+                    img = first
+                fr["observation.images.head"] = img
+            ds.add_frame(fr)
         ds.save_episode()
         n_ep += 1
         print(f"episode {n_ep - 1}: {name}, {n} frames ({n / 50:.0f} s), {e['balancing'].sum() / 50:.1f} s balancing, "
@@ -131,8 +188,29 @@ def main():
     ds.finalize()
     print(f"{n_ep} episodes -> {a.out}")
     if a.push:
-        ds.push_to_hub(private=False, tags=["asimov-1", "humanoid", "ping-pong", "balancing"])
+        ds.push_to_hub(private=a.video and not a.public, tags=["asimov-1", "humanoid", "ping-pong", "balancing"])
         print("pushed to", a.push)
+
+
+def export_after_run(log_dir=None):
+    """Called at the end of a run on the Mac (run_policy) and by onboard.sh: rebuild the local camera dataset with every run
+    recorded so far. Needs uv (lerobot is installed on the fly, not in the robot's environment); never raises."""
+    import subprocess
+    if not shutil.which("uv"):
+        print("LeRobot export skipped (no uv): uv run --with 'lerobot[dataset]' python -m tools.export_lerobot --video")
+        return
+    print("LeRobot dataset with the camera (data/lerobot/asimov-pingpong-albert-camera) ...", flush=True)
+    try:
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        data = ["logs", "logs/onboard"] + sorted(glob.glob(os.path.join(repo, "data", "20*")))
+        if log_dir and os.path.abspath(log_dir) not in [os.path.join(repo, d) for d in data]:
+            data.append(os.path.abspath(log_dir))  # a run logged somewhere else
+        r = subprocess.run(["uv", "run", "--quiet", "--with", "lerobot[dataset]", "python", "-m", "tools.export_lerobot", "--video",
+                            "--data", *data], cwd=repo, capture_output=True, text=True, timeout=1800)
+        lines = [ln for ln in (r.stdout + r.stderr).splitlines() if ln.startswith(("episode", "skipped", "no run")) or "episodes ->" in ln]
+        print("\n".join(lines[-12:]) or (r.stdout + r.stderr)[-800:])
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"LeRobot export failed ({exc!r}); the run's files are saved")
 
 
 if __name__ == "__main__":
