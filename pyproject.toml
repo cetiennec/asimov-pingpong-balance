@@ -1,0 +1,33 @@
+[project]
+name = "asimov-pingpong-balance"
+version = "0.1.0"
+description = "Asimov 1 balances a ping-pong ball on a paddle: holder, MuJoCo env, PPO curriculum, and a menlo-sdk runner for the real robot"
+authors = [
+    { name = "cetiennec", email = "cetiennec@proton.me" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "imageio>=2.38.2",
+    "imageio-ffmpeg>=0.8.1",
+    "manifold3d>=3.5.5",
+    "matplotlib>=3.11.2",
+    "mujoco>=4.0.1",
+    "numpy>=2.5.5",
+    "scipy>=1.18.1",
+    "torch>=2.15.0",
+    "trimesh>=5.2.1",
+]
+
+[project.optional-dependencies]
+albert = [
+    "menlo-sdk>=0.1.0",
+]
+
+[dependency-groups]
+dev = [
+    "cascadio>=0.1.1",
+    "rtree>=1.4.1",
+]
+
+[tool.uv]
+package = false  # scripts run from the repository root: python -m asimov_pp.train, python -m albert.run_policy

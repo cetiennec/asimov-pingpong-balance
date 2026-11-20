@@ -1,0 +1,61 @@
+{
+ "stage": "perturb",
+ "name": "albert_v3",
+ "init": "outputs/albert_v3_balance/best.pt",
+ "iters": 400,
+ "steps": 64,
+ "workers": 30,
+ "envs_per_worker": 9,
+ "lr": 0.0003,
+ "gamma": 0.99,
+ "lam": 0.95,
+ "reward_scale": 0.1,
+ "ball_noise": 1.0,
+ "max_latency": 2,
+ "smooth_penalty": 0.01,
+ "air_penalty": 0.0,
+ "camera_obs": true,
+ "cam_fps": [
+  18.0,
+  30.0
+ ],
+ "cam_latency": [
+  0.07,
+  0.16
+ ],
+ "home": "default",
+ "home_q": [
+  0.7577,
+  0.9729,
+  -0.6564,
+  -1.396,
+  -1.2616
+ ],
+ "stand_gravity": [
+  0.1214,
+  0.0081,
+  -0.9929
+ ],
+ "ball_start": [
+  0.05,
+  0.25,
+  0.015
+ ],
+ "estimator": "kf",
+ "act_latency": [
+  1,
+  4
+ ],
+ "arm_dyn": "albert/arm_dynamics.json",
+ "cam_outliers": 0.1,
+ "cam_drops": 0.08,
+ "tilt_bias": 0.04,
+ "stand_gravity2": [
+  0.203,
+  -0.011,
+  -0.98
+ ],
+ "min_std": 0.25,
+ "save_every": 20,
+ "seed": 0
+}

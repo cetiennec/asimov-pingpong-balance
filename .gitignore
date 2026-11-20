@@ -1,0 +1,22 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# robot session outputs: new runs, raw recordings (large; > GitHub's 100 MB per file), camera frame dumps
+logs/
+data/**/*.jsonl
+data/**/checkerboard_*/
+data/**/debug/
+.DS_Store
+# checkpoints live on Hugging Face (cetiennec/asimov-pingpong-balance); the defaults are kept here
+outputs/*
+!outputs/albert_v3_final/
+!outputs/albert_v2A/
+outputs/**/last.pt
