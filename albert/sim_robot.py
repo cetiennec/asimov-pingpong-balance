@@ -8,6 +8,8 @@ Time is simulated: trajectory() advances the physics by one 20 ms control step.
 """
 from __future__ import annotations
 
+import os
+
 from types import SimpleNamespace
 
 import mujoco
@@ -19,7 +21,7 @@ from asimov_pp.model import ARM_JOINTS, BALL_R, BLADE_HT, build, standing_qpos
 
 from pathlib import Path
 
-ARM_DYN_FILE = Path(__file__).resolve().parent / "arm_dynamics.json"
+ARM_DYN_FILE = Path(os.environ.get("SIM_ARM_DYN", Path(__file__).resolve().parent / "arm_dynamics.json"))  # override: sim-to-real checks
 SIM_CAMERA_FILE = Path(__file__).resolve().parent / "sim_camera.json"
 # body lean of the simulated Albert on its gantry (IMU gravity, body frame): Albert's of 2026-11-19, what the policies train with
 SIM_STAND_GRAVITY = (0.1214, 0.0081, -0.9929)
@@ -49,8 +51,8 @@ class SimAlbert:
         # Albert's arm as identified from a real session (tools/sysid_arm.py): gains, damping, friction and a 34 ms command delay.
         # Without that file: nominal gains and a 60 ms delay (Albert's arm lagged 50-65 ms more than the nominal sim's).
         dyn = ARM_DYN_FILE if (arm_dyn and ARM_DYN_FILE.exists()) else None
-        if cmd_delay_steps is None:
-            cmd_delay_steps = 2 if dyn else 3
+        if cmd_delay_steps is None:  # SIM_CMD_DELAY overrides (sim-to-real checks: onboard, commands reach Edge faster)
+            cmd_delay_steps = int(os.environ["SIM_CMD_DELAY"]) if "SIM_CMD_DELAY" in os.environ else (2 if dyn else 3)
         # same arm home and body lean as the real Albert (taught with teach_flat.py), so the policy sees the same situation
         self.env = BalanceEnv(Task(max_steps=10**6), seed=seed, home_q=HOME, stand_gravity=TAUGHT_GRAVITY, arm_dyn=dyn)
         self.env.reset()

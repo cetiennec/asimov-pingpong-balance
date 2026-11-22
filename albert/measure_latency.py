@@ -90,7 +90,7 @@ def main():
     c, lag = best
     print(f"{len(im)} frames ({len(im) / 6:.0f} fps): latency {1000 * lag:.0f} ms (correlation {c:.2f})")
     (ROOT / "camera_latency.json").write_text(json.dumps(dict(latency_s=lag, correlation=c, fps=len(im) / 6), indent=1))
-    print("done: Albert goes to DAMP 2 s after the last setpoint, keep it on the gantry")
+    print("done: Albert is under Menlo's balance controller")
 
 
 if __name__ == "__main__":

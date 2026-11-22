@@ -258,11 +258,13 @@ class BalanceEnv:
                          blade_solref=m.geom_solref[self.blade_geom].copy())
         # Albert's arm as identified from a real session (tools/sysid_arm.py, albert/arm_dynamics.json): per joint kp / kd scale
         # and Coulomb friction. None: Menlo's nominal gains, no friction.
-        if isinstance(arm_dyn, (str, Path)):
-            import json
-            arm_dyn = json.loads(Path(arm_dyn).read_text())
-        self.arm_dyn = None if arm_dyn is None else dict(kp=np.array(arm_dyn["kp_scale"]), kd=np.array(arm_dyn["kd_scale"]),
-                                                          fric=np.array(arm_dyn["friction"]))
+        # Several (a list): each episode picks one, e.g. the arm of different days (2026-11-22: the elbow and wrist half as stiff
+        # as on 11-20, which made the 11-20-trained policy jiggle).
+        import json
+        dyns = [] if arm_dyn is None else (list(arm_dyn) if isinstance(arm_dyn, (list, tuple)) else [arm_dyn])
+        dyns = [json.loads(Path(d).read_text()) if isinstance(d, (str, Path)) else d for d in dyns]
+        self._arm_dyns = [dict(kp=np.array(d["kp_scale"]), kd=np.array(d["kd_scale"]), fric=np.array(d["friction"])) for d in dyns]
+        self.arm_dyn = self._arm_dyns[0] if self._arm_dyns else None
         self._apply_arm(1.0, 1.0, 1.0, 1.0)
         self.obs_dim, self.act_dim = (OBS_DIM if self.bounce is None else BOUNCE_OBS_DIM), 5
         self.target, self._extra, self._drag = 0.0, np.zeros(BOUNCE_EXTRA), K_DRAG
@@ -365,7 +367,8 @@ class BalanceEnv:
 
     def _randomize(self):
         m, n, r = self.m, self._nom, self.rng
-        if self.arm_dyn is not None:  # around the identified arm: narrower on the gains, wide on friction
+        if self._arm_dyns:  # around an identified arm: narrower on the gains, wide on friction
+            self.arm_dyn = self._arm_dyns[int(r.integers(len(self._arm_dyns)))]
             self._apply_arm(r.uniform(0.8, 1.2, 5), r.uniform(0.7, 1.4, 5), r.uniform(0.5, 1.5, 5), r.uniform(0.8, 1.2, 5))
         else:
             kp = n["gain"] * r.uniform(0.75, 1.25, 5); kv = -n["bias"][:, 2] * r.uniform(0.6, 1.6, 5)

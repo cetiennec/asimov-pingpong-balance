@@ -60,7 +60,8 @@ def main():
     p.add_argument("--estimator", choices=["fd", "kf", "kf3"], default="fd",
                    help="camera model: ball from the last frame (fd), a Kalman predictor on the blade (kf) or in 3D (kf3, bounce)")
     p.add_argument("--act-latency", type=int, nargs=2, default=None, help="extra command delay, control steps (min max)")
-    p.add_argument("--arm-dyn", default=None, help="identified arm dynamics (albert/arm_dynamics.json, tools/sysid_arm.py)")
+    p.add_argument("--arm-dyn", nargs="+", default=None, help="identified arm dynamics (albert/arm_dynamics.json, tools/sysid_arm.py); "
+                   "several: one per episode")
     p.add_argument("--cam-outliers", type=float, default=0.0, help="up to this share of camera detections 1-3 cm off")
     p.add_argument("--cam-drops", type=float, default=0.0, help="up to this share of frames lost (and gaps 0.15-0.4 s)")
     p.add_argument("--tilt-bias", type=float, default=0.0, help="std of the arm model's flat error, unit g, per episode")
