@@ -14,7 +14,10 @@ Joint states and commands come from the menlo-sdk recording (<log>.jsonl), the b
     uv run --with "lerobot[dataset]" python -m tools.export_lerobot --push cetiennec/asimov-pingpong-albert
     uv run --with "lerobot[dataset]" python -m tools.export_lerobot --video logs     # runs with camera -> ...-camera dataset
 
-The camera frames show the room and the people in it: a --video dataset is pushed private unless --public.
+The camera frames show the room and the people in it. With --video, faces are found in every camera frame and blurred before
+they go in the dataset (tools/face_blur.py; --no-blur to keep them), and a report is written next to the dataset, never in it:
+<out>_privacy/faces.json (counts per episode) and <out>_privacy/<episode>_faces.jpg (each face found, before and after the blur,
+and each doubtful detection left sharp), to look at before pushing. A --video dataset is pushed private unless --public.
 """
 from __future__ import annotations
 
@@ -72,8 +75,10 @@ def align(csv_t, csv_q_fw, st_t, st_q):
 class CameraFrames:
     """The run's camera recording, read forward: at(t) -> the latest frame received at or before t (None before the first)."""
 
-    def __init__(self, mp4):
+    def __init__(self, mp4, blur_at=None):
+        """blur_at: boxes to blur per camera frame (tools.face_blur.face_plan), applied once per frame as it is read."""
         import imageio_ffmpeg
+        self.mp4, self.blur_at = mp4, blur_at
         self.t = np.genfromtxt(mp4[:-4] + ".csv", delimiter=",", names=True)["received_at"]
         self.reader = imageio_ffmpeg.read_frames(mp4)
         meta = next(self.reader)
@@ -89,6 +94,9 @@ class CameraFrames:
                 break
             self.k += 1
             self.img = np.frombuffer(buf, np.uint8).reshape(self.h, self.w, 3)
+            if self.blur_at is not None and self.k < len(self.blur_at) and self.blur_at[self.k]:
+                from tools.face_blur import blur
+                self.img = blur(self.img, self.blur_at[self.k])
         return self.img if want >= 0 else None
 
 
@@ -140,7 +148,12 @@ def main():
     p.add_argument("--video", action="store_true", help="with the head camera: only runs that recorded <log>_camera.mp4")
     p.add_argument("--push", default=None, help="Hugging Face dataset repo id to push to")
     p.add_argument("--public", action="store_true", help="--video --push: make it public (the frames show people)")
+    p.add_argument("--no-blur", action="store_true", help="--video: keep the faces (the dataset then stays local or private)")
+    p.add_argument("--face-score", type=float, default=None, help="--video: a face track needs one detection this sure "
+                   "(default: tools/face_blur.STRONG); lower it when the report shows faces left sharp")
     a = p.parse_args()
+    if a.no_blur and a.public:
+        raise SystemExit("--public with --no-blur: refused, the faces would be published")
     a.out = a.out or "data/lerobot/asimov-pingpong-albert" + ("-camera" if a.video else "")
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
     features = {
@@ -154,6 +167,8 @@ def main():
     eps = list(episodes(a.data, video=a.video))
     if not eps:
         raise SystemExit("no run with a robot recording" + (" and a camera recording" if a.video else "") + f" in {a.data}")
+    if a.video and not a.no_blur:
+        faces_check(eps, a.out, a.face_score)
     if a.video:
         h, w = eps[0][1]["camera"].h, eps[0][1]["camera"].w
         features["observation.images.head"] = {"dtype": "video", "shape": (h, w, 3), "names": ["height", "width", "channels"]}
@@ -192,6 +207,32 @@ def main():
         print("pushed to", a.push)
 
 
+def faces_check(eps, out, strong=None):
+    """Find the faces in each episode's camera video (before anything is written or pushed), set each episode's camera to blur
+    them, and write the report next to the dataset: <out>_privacy/faces.json and a review sheet per episode."""
+    from tools import face_blur as fb
+    rep_dir = out.rstrip("/") + "_privacy"
+    if os.path.exists(rep_dir):
+        shutil.rmtree(rep_dir)
+    os.makedirs(rep_dir)
+    finder, rows = fb.FaceFinder(), []
+    for name, e, _ in eps:
+        cam = e["camera"]
+        per = [finder.faces(img) for img in fb._frames(cam.mp4)]
+        blur_at, faces, weak = fb.face_plan(per, cam.w, strong=strong or fb.STRONG, likely=min(fb.LIKELY, strong or 1))
+        cam.blur_at = blur_at
+        rows.append(fb.report_line(name, len(per), blur_at, faces, weak))
+        sheet = fb.review(cam.mp4, name, blur_at, faces, weak, rep_dir)
+        r = rows[-1]
+        print(f"faces {name}: {r['frames_blurred']} of {r['camera_frames']} camera frames blurred ({r['face_tracks']} faces), "
+              f"{r['weak_tracks_not_blurred']} doubtful detections left sharp (max score {r['max_weak_score']})"
+              + (f" -> {sheet}" if sheet else ""), flush=True)
+    with open(os.path.join(rep_dir, "faces.json"), "w") as fh:
+        json.dump(dict(model=os.path.basename(fb.MODEL_URL), strong=strong or fb.STRONG, likely=min(fb.LIKELY, strong or 1),
+                       min_width=fb.MIN_WIDTH, episodes=rows), fh, indent=1)
+    print(f"face report -> {rep_dir}/ (local only: the sheets show the faces unblurred)")
+
+
 def export_after_run(log_dir=None):
     """Called at the end of a run on the Mac (run_policy) and by onboard.sh: rebuild the local camera dataset with every run
     recorded so far. Needs uv (lerobot is installed on the fly, not in the robot's environment); never raises."""
@@ -207,7 +248,8 @@ def export_after_run(log_dir=None):
             data.append(os.path.abspath(log_dir))  # a run logged somewhere else
         r = subprocess.run(["uv", "run", "--quiet", "--with", "lerobot[dataset]", "python", "-m", "tools.export_lerobot", "--video",
                             "--data", *data], cwd=repo, capture_output=True, text=True, timeout=1800)
-        lines = [ln for ln in (r.stdout + r.stderr).splitlines() if ln.startswith(("episode", "skipped", "no run")) or "episodes ->" in ln]
+        lines = [ln for ln in (r.stdout + r.stderr).splitlines()
+                 if ln.startswith(("episode", "skipped", "no run", "face report")) or "episodes ->" in ln]
         print("\n".join(lines[-12:]) or (r.stdout + r.stderr)[-800:])
     except (OSError, subprocess.SubprocessError) as exc:
         print(f"LeRobot export failed ({exc!r}); the run's files are saved")

@@ -23,3 +23,4 @@ outputs/*
 !outputs/albert_bounce/
 outputs/**/last.pt
 data/lerobot/
+.cache/
