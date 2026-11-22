@@ -89,6 +89,8 @@ def main():
                    "head's forward axis, as in the earlier sessions)")
     p.add_argument("--roi", action=argparse.BooleanOptionalAction, default=True,
                    help="search the ball only around where the arm model puts the blade (--no-roi: the whole frame)")
+    p.add_argument("--action-filter", type=float, default=0.0, help="smooth the policy's actions: a = f * a_prev + (1 - f) * a_new "
+                   "(0: off). The arm jiggled on Albert: actions changed 3x more step to step than in the sim (2026-11-22 G4)")
     p.add_argument("--start-frames", type=int, default=4, help="consecutive detections on the blade before balancing starts "
                    "(they must line up, slower than 0.25 m/s: a ball resting or rolling, not one still in the hand)")
     p.add_argument("--det-hints", action=argparse.BooleanOptionalAction, default=True,
@@ -428,6 +430,7 @@ def _session(a, robot, calib, cam, ball, policy, kin, kin_cam, obs_b, gains, q_l
                             go = coef
                     if go is not None:  # the ball is on the blade: go
                         mode, n_catch, t_start_bal, last_seen = "balance", n_catch + 1, t, t
+                        act_prev = np.zeros(5)
                         t0_ = recent[0][0] - recent[-1][0]
                         obs_b.start(recent[0][0], go[0] + go[1] * t0_, recent[-1][0], go[0])  # the fitted line's ends
                         recent = []
@@ -447,6 +450,9 @@ def _session(a, robot, calib, cam, ball, policy, kin, kin_cam, obs_b, gains, q_l
                     else:
                         obs = obs_b.build(q_arm, qd_arm, st.gravity, st.gyro)
                         act = np.clip(policy(obs), -1, 1)
+                        if a.action_filter:  # what the arm gets is what the policy sees as its last action
+                            act = a.action_filter * act_prev + (1 - a.action_filter) * act
+                        act_prev = act
                         obs_b.push_action(act)
                         step_scale = float(np.clip((t_now - t_prev) / PERIOD, 1.0, 1.5)) if t_prev is not None else 1.0
                         q_target = np.clip(q_target + act * ACTION_SCALE * step_scale, q_lo, q_hi)  # same rad/s at a slower loop
