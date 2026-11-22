@@ -67,7 +67,7 @@ def _otsu(v, bins=32):
     return edges[int(np.argmax(between)) + 1]
 
 
-def _ball_like(pix, step, min_area, min_red_ring, r_px):
+def _ball_like(pix, step, min_area, min_red_ring, r_px, size_lim=(0.5, 1.7)):
     """One blob (bool mask on the step grid) -> (x, y, radius, area) in full-resolution pixels if it looks like the ball on the
     blade: big enough, round and filled like a disc, of the expected size (r_px, if known) and surrounded by red rubber."""
     ys, xs = np.nonzero(pix)
@@ -78,7 +78,7 @@ def _ball_like(pix, step, min_area, min_red_ring, r_px):
     if not (0.5 < hh / ww < 2.0) or area / (hh * ww) < 0.5:
         return None  # elongated or not filled like a disc
     cy, cx, rr = ys.mean(), xs.mean(), max(1.5, np.sqrt(area / np.pi))
-    if r_px is not None and not (0.5 <= rr * step / r_px <= 1.7):
+    if r_px is not None and not (size_lim[0] <= rr * step / r_px <= size_lim[1]):
         return None  # not the ball's size where the blade is (a highlight, a patch of background)
     # a ball on the blade is surrounded by red rubber; a screen or a hand behind the blade's edge is not
     red = masks.red
@@ -103,13 +103,32 @@ def detect(rgb, ball=BALL_WHITE, min_area=12, step=2, min_red_ring=0.35, r_px=No
     pixel where the predictor expects the ball: then the ball-like blob nearest to it (within gate_px) wins, not the largest."""
     if np.asarray(rgb).size == 0:
         return None
+    found = _detect(rgb, ball, min_area, step, min_red_ring, r_px)
+    if not found and r_px is not None and ball.get("color") == "white" and ball.get("min_val", 0.5) > 0.4:
+        # nothing at the usual brightness: the camera darkens the whole image when a bright light is in view (a neon sign:
+        # the ball at value 0.45-0.5, 2026-11-22 G3_v3_3, 18 -> 57 % of frames detected); try again a bit darker, only
+        # when the ball's size is known and with a tighter size window (darker, pale patches of the handle pass otherwise)
+        found = _detect(rgb, dict(ball, min_val=ball.get("min_val", 0.5) - 0.12), min_area, step, min_red_ring, r_px,
+                        size_lim=(0.6, 1.5))
+    if not found:
+        return None
+    if expect is not None:
+        gate = gate_px if gate_px is not None else (3.0 * r_px if r_px else 60.0)
+        dist = [np.hypot(f[0] - expect[0], f[1] - expect[1]) for f in found]
+        if min(dist) <= gate:
+            return found[int(np.argmin(dist))][:3]
+    return max(found, key=lambda f: f[3])[:3]
+
+
+def _detect(rgb, ball, min_area, step, min_red_ring, r_px, size_lim=(0.5, 1.7)):
+    """The ball-like blobs (x, y, radius, area) at these colour thresholds."""
     blade, col, core = masks(rgb, ball, step)
     cand = ndimage.binary_opening(col & blade)
     lab, n = ndimage.label(cand)
     found = []
     for k, sl in enumerate(ndimage.find_objects(lab), start=1):
         pix = np.zeros_like(cand); pix[sl] = lab[sl] == k
-        hit = _ball_like(pix, step, min_area, min_red_ring, r_px)
+        hit = _ball_like(pix, step, min_area, min_red_ring, r_px, size_lim)
         if hit is not None:
             found.append(hit)
             continue
@@ -123,17 +142,10 @@ def detect(rgb, ball=BALL_WHITE, min_area=12, step=2, min_red_ring=0.35, r_px=No
             plab, pn = ndimage.label(ndimage.binary_opening(part))
             for j, psl in enumerate(ndimage.find_objects(plab), start=1):
                 q = np.zeros_like(cand); q[psl] = plab[psl] == j
-                hit = _ball_like(q, step, min_area, min_red_ring, r_px)
+                hit = _ball_like(q, step, min_area, min_red_ring, r_px, size_lim)
                 if hit is not None:
                     found.append(hit)
-    if not found:
-        return None
-    if expect is not None:
-        gate = gate_px if gate_px is not None else (3.0 * r_px if r_px else 60.0)
-        dist = [np.hypot(f[0] - expect[0], f[1] - expect[1]) for f in found]
-        if min(dist) <= gate:
-            return found[int(np.argmin(dist))][:3]
-    return max(found, key=lambda f: f[3])[:3]
+    return found
 
 
 def debug_image(rgb, ball=BALL_WHITE, step=2):
