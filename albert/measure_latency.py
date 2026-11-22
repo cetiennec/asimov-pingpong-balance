@@ -14,7 +14,7 @@ import time
 import numpy as np
 
 from albert.ball_camera import masks
-from albert.common import to_balance, graceful_signals, with_stance, take_joints, hand_back, BalanceOnExit, ARM_IDX, BALL, FLAT_HOME_FW, HOME, NECK_PITCH_IDX, NECK_YAW_IDX, ROOT, TiltGuard, Kinematics, look_at, mjcf_to_fw, fw_to_mjcf, safe_pose
+from albert.common import KP, KD, to_balance, graceful_signals, with_stance, take_joints, hand_back, BalanceOnExit, ARM_IDX, BALL, FLAT_HOME_FW, HOME, NECK_PITCH_IDX, NECK_YAW_IDX, ROOT, TiltGuard, Kinematics, look_at, mjcf_to_fw, fw_to_mjcf, safe_pose
 from albert.ball_camera import BALL_ORANGE, BALL_WHITE
 
 
@@ -40,11 +40,11 @@ def main():
         hold[ARM_IDX] = FLAT_HOME_FW if FLAT_HOME_FW is not None else mjcf_to_fw(HOME)
         hold[NECK_YAW_IDX], hold[NECK_PITCH_IDX] = look_at(kin, fw_to_mjcf(hold[ARM_IDX]), base_quat=st.quat or (1, 0, 0, 0))
         print("arm to the home pose (3 s)")
-        robot.set_joints(hold, duration=3.0, wait=False); time.sleep(3.5)
+        robot.set_joints(hold, duration=3.0, wait=False, kp=KP, kd=KD); time.sleep(3.5)
         # aim the head again with the body as it now hangs (the stance and the rope change the lean by up to ~15 deg)
         stq = robot.get_state()
         hold[NECK_YAW_IDX], hold[NECK_PITCH_IDX] = look_at(kin, fw_to_mjcf(hold[ARM_IDX]), base_quat=stq.quat or (1, 0, 0, 0))
-        robot.set_joints(hold, duration=0.8, wait=False); time.sleep(1.0)
+        robot.set_joints(hold, duration=0.8, wait=False, kp=KP, kd=KD); time.sleep(1.0)
         # the guard's reference lean is taken now, arm at home: on the gantry the arm forward tips the hanging body ~9 deg
         # gantry test: hanging from the taut rope Albert leans up to ~17 deg, so only the relative limit (+9 deg) matters here
         with TiltGuard(robot, on_trip=lambda: to_balance(robot), max_abs=25.0):

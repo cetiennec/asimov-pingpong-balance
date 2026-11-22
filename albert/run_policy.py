@@ -68,7 +68,8 @@ def main():
     p.add_argument("--seed", type=int, default=3, help="--sim only")
     p.add_argument("--place", type=float, nargs=2, default=(0.03, -0.02), help="--sim only: where the ball is put (u, w), m")
     p.add_argument("--level", action="store_true", help="while waiting, level the blade by IK (off: the policy was trained from the home pose)")
-    p.add_argument("--debug-video", default=None, help="real robot: what the detector saw (frame | masks); default: <log>_detect.mp4, '' to skip")
+    p.add_argument("--debug-video", default=None, help="real robot: what the detector saw (frame | masks), <log>_detect.mp4 to keep it; default: only when the raw "
+                   "camera is not recorded (--camera-video '')")
     p.add_argument("--camera-video", default=None, help="raw head-camera frames (halved, H.264) for the LeRobot dataset; default: "
                    "<log>_camera.mp4 (+ _camera.csv: frame times), '' to skip")
     p.add_argument("--lerobot", action=argparse.BooleanOptionalAction, default=None,
@@ -88,6 +89,8 @@ def main():
                    "head's forward axis, as in the earlier sessions)")
     p.add_argument("--roi", action=argparse.BooleanOptionalAction, default=True,
                    help="search the ball only around where the arm model puts the blade (--no-roi: the whole frame)")
+    p.add_argument("--start-frames", type=int, default=4, help="consecutive detections on the blade before balancing starts "
+                   "(they must line up, slower than 0.25 m/s: a ball resting or rolling, not one still in the hand)")
     p.add_argument("--det-hints", action=argparse.BooleanOptionalAction, default=True,
                    help="tell the detector the ball's expected size (camera model) and where the predictor expects it "
                         "(--no-det-hints: the 2026-11-20 detector, largest ball-like blob)")
@@ -104,10 +107,11 @@ def main():
     if not a.sim:
         a.log = unique_log(a.log)  # never overwrite an earlier run
         allow_link_hiccups()
-    if a.debug_video is None:
-        a.debug_video = a.log.replace(".csv", "_detect.mp4")
     if a.camera_video is None:
         a.camera_video = a.log.replace(".csv", "_camera.mp4")
+    if a.debug_video is None:  # the raw recording supersedes it (the masks can be redrawn from it offline): it cost the
+        # detector thread ~5 ms per frame on the Pi (14.8 instead of 22 fps reached the detector, 2026-11-22 G1)
+        a.debug_video = "" if a.camera_video else a.log.replace(".csv", "_detect.mp4")
     import os
     os.makedirs(os.path.dirname(a.log) or ".", exist_ok=True)
 
@@ -351,7 +355,8 @@ def _session(a, robot, calib, cam, ball, policy, kin, kin_cam, obs_b, gains, q_l
         if guard_ctx and not guard_ctx.running:
             guard_ctx.__enter__()
         mode, seen, n_catch, t_start_bal = "wait", 0, 0, 0.0
-        prev_det = last_det = None  # the last two on-blade detections while waiting: the predictor starts from both
+        recent = []  # consecutive on-blade detections while waiting (t, uw): balancing starts from a straight, slow track
+        t_rearm = 0.0  # after a loss, no new start before this time (the hand is putting the ball back)
         last_logged = None
         print(f"detector: {'blade region only (--roi)' if a.roi else 'whole frame'}")
         hand_wait = 0
@@ -404,17 +409,28 @@ def _session(a, robot, calib, cam, ball, policy, kin, kin_cam, obs_b, gains, q_l
                     elif not a.level:  # back to the home pose the policy starts from, slowly (0.3 rad/s at most)
                         q_target = q_target + np.clip(q_home - q_target, -0.006, 0.006)  # the (levelled) start pose
                     if fresh:
-                        on = np.hypot(*uw) < BLADE_R - 0.5 * BALL_R
-                        seen = seen + 1 if on else 0
-                        if on:
+                        on = uw is not None and np.hypot(*uw) < BLADE_R - BALL_R  # well inside the blade
+                        if on and (not recent or t_cap - recent[-1][0] < 0.3):
+                            recent = (recent + [(t_cap, np.asarray(uw))])[-a.start_frames:]
                             last_uw = np.asarray(uw)
-                            prev_det, last_det = last_det, (t_cap, np.asarray(uw))
-                    if seen >= 2:  # the ball is on the blade: go; the predictor starts from the two detections (position + velocity)
-                        mode, n_catch, t_start_bal, last_seen = "balance", n_catch + 1, t, t
-                        if prev_det is not None and 0 < last_det[0] - prev_det[0] < 0.3:
-                            obs_b.start(prev_det[0], prev_det[1], last_det[0], last_det[1])
                         else:
-                            obs_b.reset(); obs_b.measure(t_cap, uw)
+                            recent = [(t_cap, np.asarray(uw))] if on else []
+                    go = None
+                    if len(recent) >= a.start_frames and t >= t_rearm:
+                        # a ball resting or rolling moves on a straight line at a steady speed; one in the hand or bouncing
+                        # does not. Velocity from the line fit, not from two frames (a hand's motion made the predictor
+                        # throw the ball off the blade at once: 2026-11-22 G3, 9 starts lost within 0.1 s)
+                        tt = np.array([r_[0] for r_ in recent]); pp = np.array([r_[1] for r_ in recent])
+                        A = np.c_[np.ones_like(tt), tt - tt[-1]]
+                        coef, *_ = np.linalg.lstsq(A, pp, rcond=None)
+                        resid = np.max(np.linalg.norm(A @ coef - pp, axis=1))
+                        if resid < 0.004 and np.hypot(*coef[1]) < 0.25:
+                            go = coef
+                    if go is not None:  # the ball is on the blade: go
+                        mode, n_catch, t_start_bal, last_seen = "balance", n_catch + 1, t, t
+                        t0_ = recent[0][0] - recent[-1][0]
+                        obs_b.start(recent[0][0], go[0] + go[1] * t0_, recent[-1][0], go[0])  # the fitted line's ends
+                        recent = []
                         obs_b.tick(t_now, q_arm, quat, q[WAIST_IDX])
                         print(f"BALANCE #{n_catch} at t={t:.1f} s (ball at u={100*last_uw[0]:+.1f}, w={100*last_uw[1]:+.1f} cm)")
                 else:
@@ -427,7 +443,7 @@ def _session(a, robot, calib, cam, ball, policy, kin, kin_cam, obs_b, gains, q_l
                         last_uw = x[:2]
                     if t - last_seen > LOST_AFTER_S or x is None or np.hypot(*x[:2]) > BLADE_R - 0.5 * BALL_R:
                         print(f"  ball lost after {t - t_start_bal:.1f} s: WAIT (arm glides back to home), put the ball back")
-                        mode, seen = "wait", 0
+                        mode, recent, t_rearm = "wait", [], t + 0.5
                     else:
                         obs = obs_b.build(q_arm, qd_arm, st.gravity, st.gyro)
                         act = np.clip(policy(obs), -1, 1)

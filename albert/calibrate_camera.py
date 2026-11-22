@@ -25,7 +25,7 @@ import numpy as np
 
 from albert.ball_camera import BALL_ORANGE, BALL_WHITE, CameraModel, debug_image, detect
 from albert.common import graceful_signals, TAUGHT_GRAVITY, TiltGuard, look_at  # noqa: F401
-from albert.common import (lean_deg, with_stance, to_balance, take_joints, hand_back, BalanceOnExit, safe_pose, FLAT_HOME_FW, HOME, TiltGuard, ARM_IDX, BALL, CALIB_FILE, CALIB_FILE_SIM, NECK_PITCH, NECK_PITCH_IDX, NECK_YAW, NECK_YAW_IDX, ROOT,
+from albert.common import (KP, KD, lean_deg, with_stance, to_balance, take_joints, hand_back, BalanceOnExit, safe_pose, FLAT_HOME_FW, HOME, TiltGuard, ARM_IDX, BALL, CALIB_FILE, CALIB_FILE_SIM, NECK_PITCH, NECK_PITCH_IDX, NECK_YAW, NECK_YAW_IDX, ROOT,
                            WAIST_IDX, Kinematics, fw_to_mjcf, mjcf_to_fw)
 
 SPOTS = [(0, 0), (0.04, 0), (-0.04, 0), (0, 0.04), (0, -0.04), (0.03, 0.03), (0.03, -0.03), (-0.03, 0.03), (-0.03, -0.03)]
@@ -179,8 +179,9 @@ def _calibrate(a, robot, kin, ball, start, hold):
         print("moving the arm to the home pose and the head towards the paddle (3 s)")
         if a.sim:
             robot.set_joints(hold, duration=3.0)
-        else:  # the arm sags a little under the paddle: do not wait for a tight tolerance
-            robot.set_joints(hold, duration=3.0, wait=False)
+        else:  # the arm sags a little under the paddle: do not wait for a tight tolerance. The stance needs the training
+            # gains (KP, KD): with Edge's own, softer ones the legs give and the hanging body tipped to 19-20 deg (2026-11-22)
+            robot.set_joints(hold, duration=3.0, wait=False, kp=KP, kd=KD)
             time.sleep(3.5)
             # level the blade for the body's actual lean (the stance and the rope tilt Albert by up to ~15 deg; a tilted blade
             # lets the ball roll off its spot), then aim the head again
@@ -191,11 +192,11 @@ def _calibrate(a, robot, kin, ball, start, hold):
                 q = fw_to_mjcf(np.array(st.joint_pos)[ARM_IDX])
                 dq, tilt = level_dq(kin_l, q, st.quat, st.joint_pos[WAIST_IDX])
                 hold[ARM_IDX] = mjcf_to_fw(np.asarray(fw_to_mjcf(hold[ARM_IDX])) + dq)
-                robot.set_joints(hold, duration=0.8, wait=False); time.sleep(1.2)
+                robot.set_joints(hold, duration=0.8, wait=False, kp=KP, kd=KD); time.sleep(1.2)
             st = robot.get_state()
             q = fw_to_mjcf(np.array(st.joint_pos)[ARM_IDX]); _, tilt = level_dq(kin_l, q, st.quat, st.joint_pos[WAIST_IDX])
             hold[NECK_YAW_IDX], hold[NECK_PITCH_IDX] = look_at(kin_l, q, waist=hold[WAIST_IDX], base_quat=st.quat)
-            robot.set_joints(hold, duration=0.8, wait=False); time.sleep(1.2)
+            robot.set_joints(hold, duration=0.8, wait=False, kp=KP, kd=KD); time.sleep(1.2)
             print(f"  blade levelled: {tilt:.1f} deg left (body lean {lean_deg(st):.1f} deg)", flush=True)
             import imageio
             for _ in range(50):
