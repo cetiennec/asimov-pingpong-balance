@@ -58,6 +58,9 @@ def main():
     p.add_argument("--ckpt", default="outputs/albert_v3_final/best.pt",
                    help="policy (default: v2A, trained on the sim matched to Albert's 2026-11-19 session; the previous one: "
                         "outputs/albert_perturb/best.pt)")
+    p.add_argument("--controller", default="policy", choices=("policy", "mpc"),
+                   help="policy: the PPO checkpoint (--ckpt); mpc: the model-predictive controller (albert/mpc.py), SIMULATION-TESTED ONLY")
+    p.add_argument("--mpc", default="", help="--controller mpc: parameters, 'key=value,...' or a JSON file (albert/mpc.py MPCParams)")
     p.add_argument("--sim", action="store_true", help="run on the simulated Albert")
     p.add_argument("--supported", action="store_true", help="confirms Albert hangs from its gantry")
     p.add_argument("--duration", type=float, default=120.0, help="whole session, s (several catches)")
@@ -135,9 +138,14 @@ def main():
         calib = robot.exact_calibration(calib)
     cam = CameraModel.from_json(calib)
     ball = calib["ball"]  # the colour thresholds the camera was calibrated with
-    policy = load_policy(a.ckpt)
     kin, kin_cam = Kinematics(), Kinematics()
-    obs_b = ObsBuilder(kin)
+    if a.controller == "mpc":
+        from albert.mpc import MPCController
+        policy = MPCController(a.mpc or None)
+        print("controller: MPC", a.mpc or "(defaults)")
+    else:
+        policy = load_policy(a.ckpt)
+    obs_b = ObsBuilder(kin, paddle_acc=a.controller == "mpc")
     gains = {} if a.edge_gains else dict(kp=KP, kd=KD)
     q_lo = np.array([kin.m.jnt_range[kin.m.joint(j).id][0] for j in ARM_JOINTS]) * 0.97
     q_hi = np.array([kin.m.jnt_range[kin.m.joint(j).id][1] for j in ARM_JOINTS]) * 0.97
@@ -431,6 +439,8 @@ def _session(a, robot, calib, cam, ball, policy, kin, kin_cam, obs_b, gains, q_l
                     if go is not None:  # the ball is on the blade: go
                         mode, n_catch, t_start_bal, last_seen = "balance", n_catch + 1, t, t
                         act_prev = np.zeros(5)
+                        if a.controller == "mpc":  # a new balancing: from the arm's current targets, pulled back to the start pose
+                            policy.reset(q_target=q_target, pull_to=q_home)
                         t0_ = recent[0][0] - recent[-1][0]
                         obs_b.start(recent[0][0], go[0] + go[1] * t0_, recent[-1][0], go[0])  # the fitted line's ends
                         recent = []

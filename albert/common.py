@@ -122,11 +122,15 @@ class ObsBuilder:
     Kalman predictor as in training (asimov_pp/estimator.py): tick() every control step with the blade tilt from the arm
     model + IMU, measure() with each camera frame at its capture time."""
 
-    def __init__(self, kin: Kinematics):
+    def __init__(self, kin: Kinematics, paddle_acc: bool = False):
+        """paddle_acc: the predictor also gets the blade's in-plane acceleration from the arm's motion (forward kinematics in
+        the body frame, second difference over the control steps), as env.py's kf_paddle_acc. Off for the policies (trained
+        without it); on for the MPC (albert/mpc.py), which moves the blade sideways."""
         from asimov_pp.estimator import KF_PARAMS, BallKF
         self.kin, self.kf = kin, BallKF(dt=DT, **KF_PARAMS)
         self.hist = np.zeros((ACT_HIST, 5))
         self._R = np.eye(3)
+        self.paddle_acc, self._pc = paddle_acc, []
 
     def reset(self):
         self.hist[:] = 0
@@ -137,8 +141,17 @@ class ObsBuilder:
 
     def tick(self, t, q_arm, base_quat, waist):
         self.kin.update(q_arm, waist=waist, base_quat=base_quat)
-        self._R = self.kin.blade_frame()[1]
-        self.kf.step(t, (self._R.T @ np.array([0.0, 0.0, -1.0]))[:2])
+        c, self._R = self.kin.blade_frame()
+        a_p = np.zeros(2)
+        if self.paddle_acc:  # blade centre in the body frame -> acceleration over the last two steps -> blade axes
+            Rb = self.kin.d.xmat[1].reshape(3, 3)
+            self._pc = (self._pc + [(t, Rb.T @ (c - self.kin.d.xpos[1]))])[-3:]
+            if len(self._pc) == 3:
+                (t0, p0), (t1, p1), (t2, p2) = self._pc
+                if t2 > t1 > t0:
+                    a_b = ((p2 - p1) / (t2 - t1) - (p1 - p0) / (t1 - t0)) / (0.5 * (t2 - t0))
+                    a_p = np.clip((self._R.T @ Rb @ a_b)[:2], -20.0, 20.0)
+        self.kf.step(t, (self._R.T @ np.array([0.0, 0.0, -1.0]))[:2], a_p)
 
     def measure(self, t_cap, uw, R=None):
         return self.kf.measure(t_cap, uw, R)

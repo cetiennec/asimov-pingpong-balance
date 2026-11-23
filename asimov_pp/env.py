@@ -176,7 +176,7 @@ class BalanceEnv:
                  ball_start=(0.02, 0.03), estimator: str = "fd", act_latency=None,
                  seed: int | None = None, arm_dyn=None, kf_params=None, cam_outliers: float = 0.0, cam_drops: float = 0.0,
                  tilt_bias: float = 0.0, stand_gravity2=None, bounce=None, p_rest: float = 0.3, privileged: bool = False,
-                 cam_noise_px=None,
+                 cam_noise_px=None, kf_paddle_acc: bool = False,
                  model: mujoco.MjModel | None = None):
         self.task = STAGES[task] if isinstance(task, str) else task
         self.domain_rand, self.ball_noise, self.max_latency, self.home_penalty = domain_rand, ball_noise, max_latency, home_penalty
@@ -196,6 +196,11 @@ class BalanceEnv:
         self.privileged = privileged
         # bounce stage camera: detection noise (centre, radius) in px; default CAM_CENTRE_PX, CAM_RADIUS_PX
         self.cam_noise_px = (CAM_CENTRE_PX, CAM_RADIUS_PX) if cam_noise_px is None else tuple(cam_noise_px)
+        # kf_paddle_acc: the Kalman filter also predicts with the blade's in-plane acceleration from the arm's motion (forward
+        # kinematics in the torso frame, as Albert can compute it from its encoders). Off in training: the policies learnt
+        # with the filter that ignores it. The MPC (albert/mpc.py) moves the blade sideways and needs it.
+        self.kf_paddle_acc = kf_paddle_acc
+        self._pc_hist = []
         self.rest_ends = True  # bounce stage: a ball at rest for 0.5 s ends the episode (evaluation may switch it off)
         if self.bounce is not None and camera_obs:
             assert estimator == "kf3", "the bounce stage sees the ball through the 3D predictor (--estimator kf3)"
@@ -448,6 +453,7 @@ class BalanceEnv:
         k = r.uniform(0.5, 1.5) * self.ball_noise
         self._bn = dict(k=k, bias=r.normal(0, 0.004, 2) * k, ou=r.normal(0, 0.0025, 2) * k)
         self._fd.reset()
+        self._pc_hist = []
         p = self._ball_meas()
         self._bbuf = [p] * (self._ball_delay + 1)
         self._ball_obs = self._fd.update(self._bbuf[0])
@@ -474,6 +480,16 @@ class BalanceEnv:
         elif self.bounce is not None:
             self._ball_obs = self._truth_obs()
         return self._obs()
+
+    def _paddle_acc(self, R):
+        """In-plane acceleration of the blade centre over the last step (m/s2, blade axes), from its position in the torso
+        frame: the arm's own motion, what Albert's forward kinematics give (the body's sway is not included)."""
+        tp, tR = self.d.xpos[self.torso_body], self.d.xmat[self.torso_body].reshape(3, 3)
+        self._pc_hist = (self._pc_hist + [tR.T @ (self.d.geom_xpos[self.blade_geom] - tp)])[-3:]
+        if len(self._pc_hist) < 3:
+            return np.zeros(2)
+        a_t = (self._pc_hist[2] - 2 * self._pc_hist[1] + self._pc_hist[0]) / DT ** 2
+        return (R.T @ tR @ a_t)[:2]
 
     def _poisson(self, rate, t0):
         if rate <= 0:
@@ -604,7 +620,7 @@ class BalanceEnv:
             if self.estimator == "kf":  # predict with the blade's tilt (+ IMU-like noise); paddle acceleration left to the noise
                 _, R = self.blade_frame()
                 g_in = (R.T @ np.array([0, 0, -1.0]))[:2] + (r.normal(0, 0.015, 2) if self.domain_rand else 0) + self._g_bias
-                self.kf.step(now, g_in)
+                self.kf.step(now, g_in, self._paddle_acc(R) if self.kf_paddle_acc else (0.0, 0.0))
             elif self.estimator == "kf3":  # predict with the blade's pose and motion from the arm model
                 self._blade_m = self._blade_model()
                 self.kf.step(now, self._blade_m)
