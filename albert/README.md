@@ -43,8 +43,9 @@ Before the ball goes on, the blade is levelled for Albert's actual lean (arm mod
 ball on; it starts by itself and waits again when the ball is lost. Each run writes `<log>.csv` (50 Hz), `<log>_frames.csv`
 (every camera detection), `<log>.jsonl` (menlo-sdk recording), `<log>_camera.mp4` + `_camera.csv` (the raw head camera,
 640x360, every frame with its time; `--camera-video ''` to skip) and `<log>_detect.mp4` (what the detector saw, with its masks).
-At the end of a run on the Mac (or after `onboard.sh` for a run on the Pi), every run with a camera recording is exported to
-the local LeRobot dataset `data/lerobot/asimov-pingpong-albert-camera` (`--no-lerobot` to skip). The camera frames show the
+Every run with a camera recording can be exported to the local LeRobot dataset `data/lerobot/asimov-pingpong-albert-camera`
+with face blur (minutes, so not after each run): `python -c 'from tools.export_lerobot import export_after_run;
+export_after_run()'` on any Mac with the logs, or `--lerobot` (Mac runs) / `ALBERT_EXPORT=1 albert/onboard.sh ...` (Pi runs). The camera frames show the
 room and the people in it: they stay local.
 
 After a run: `python -m tools.session_stats <log>.csv`, `python -m tools.tune_kf <log>.csv` (predictor on real data).

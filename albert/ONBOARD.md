@@ -23,8 +23,8 @@ python -m albert.status --mode livekit                                          
 ```
 
 `onboard.sh` syncs the code (and the calibrations, newer file wins, both ways), runs the script on the Pi over `ssh -t`
-(prompts work), then copies the Pi's `logs/` to `logs/onboard/` and, after a `run_policy`, rebuilds the local LeRobot dataset
-with the camera on the Mac.
+(prompts work), then copies the Pi's `logs/` to `logs/onboard/`. The LeRobot camera dataset (face blur, minutes) is rebuilt only with
+`ALBERT_EXPORT=1 albert/onboard.sh ...`, or later with `export_after_run()` (see albert/README.md).
 
 Safety is the same as on the Mac, plus: a dropped ssh session ends the script like Ctrl+C (SIGHUP is handled): the arm glides
 home and Albert is handed to Menlo's balance controller (`stand()` → `balance()`). A hard crash of the Python process (kill -9,

@@ -76,8 +76,8 @@ def main():
     p.add_argument("--camera-video", default=None, help="raw head-camera frames (halved, H.264) for the LeRobot dataset; default: "
                    "<log>_camera.mp4 (+ _camera.csv: frame times), '' to skip")
     p.add_argument("--lerobot", action=argparse.BooleanOptionalAction, default=None,
-                   help="after the run, rebuild the local LeRobot dataset with the camera (default: on for real runs on the Mac; "
-                        "on Albert's Pi onboard.sh does it on the Mac)")
+                   help="after the run, rebuild the local LeRobot dataset with the camera (face blur over every run: minutes). "
+                        "Default off; later: python -c 'from tools.export_lerobot import export_after_run; export_after_run()'")
     p.add_argument("--truth-ball", action="store_true", help="--sim only, debugging: use the true ball position, not the camera")
     p.add_argument("--kick", type=float, default=0.0, help="--sim only: flick the ball every 3 s with this speed (m/s)")
     p.add_argument("--freestand", action="store_true", help="--sim only: Albert standing on the floor (no gantry), legs held by PD")
@@ -175,8 +175,7 @@ def main():
         save_logs()
         from albert.frame_recorder import close_all
         close_all()
-    import platform
-    if a.lerobot if a.lerobot is not None else (not a.sim and platform.machine() not in ("aarch64", "armv7l")):
+    if a.lerobot:
         from tools.export_lerobot import export_after_run
         export_after_run(os.path.dirname(os.path.abspath(a.log)))  # Albert is with Menlo's balance controller by now
 
