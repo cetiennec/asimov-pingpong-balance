@@ -125,9 +125,10 @@ class ObsBuilder:
     def __init__(self, kin: Kinematics, paddle_acc: bool = False):
         """paddle_acc: the predictor also gets the blade's in-plane acceleration from the arm's motion (forward kinematics in
         the body frame, second difference over the control steps), as env.py's kf_paddle_acc. Off for the policies (trained
-        without it); on for the MPC (albert/mpc.py), which moves the blade sideways."""
-        from asimov_pp.estimator import KF_PARAMS, BallKF
-        self.kin, self.kf = kin, BallKF(dt=DT, **KF_PARAMS)
+        without it); on for the MPC (albert/mpc.py), which moves the blade sideways, and for policies trained with
+        --kf-paddle-acc (uses_paddle_acc). Then the filter runs with KF_PARAMS_ACC, as in training."""
+        from asimov_pp.estimator import KF_PARAMS, KF_PARAMS_ACC, BallKF
+        self.kin, self.kf = kin, BallKF(dt=DT, **(KF_PARAMS_ACC if paddle_acc else KF_PARAMS))
         self.hist = np.zeros((ACT_HIST, 5))
         self._R = np.eye(3)
         self.paddle_acc, self._pc = paddle_acc, []
@@ -170,6 +171,15 @@ class ObsBuilder:
         acc = -np.asarray(gravity_body, np.float64)  # standing still: the accelerometer reads -gravity
         return np.concatenate([ball, g_blade, np.asarray(gyro) * 0.25, acc, (np.asarray(q_arm) - HOME) / 0.3,
                                np.asarray(qd_arm) * 0.1, np.zeros(2), self.hist.ravel()]).astype(np.float32)
+
+
+def uses_paddle_acc(ckpt):
+    """Was this policy trained with the predictor that knows the blade's acceleration (train.py --kf-paddle-acc)? Read from
+    the args.json next to the checkpoint; False for older policies, or a checkpoint without it."""
+    try:
+        return bool(json.loads((Path(ckpt).parent / "args.json").read_text()).get("kf_paddle_acc", False))
+    except (OSError, ValueError):
+        return False
 
 
 def load_calibration(sim=False):

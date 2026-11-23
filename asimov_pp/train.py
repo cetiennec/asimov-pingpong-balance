@@ -62,6 +62,8 @@ def main():
     p.add_argument("--act-latency", type=int, nargs=2, default=None, help="extra command delay, control steps (min max)")
     p.add_argument("--arm-dyn", nargs="+", default=None, help="identified arm dynamics (albert/arm_dynamics.json, tools/sysid_arm.py); "
                    "several: one per episode")
+    p.add_argument("--kf-paddle-acc", action="store_true", help="--estimator kf: the predictor also gets the blade's in-plane "
+                   "acceleration from the arm's forward kinematics (KF_PARAMS_ACC); saved in args.json, run_policy follows it")
     p.add_argument("--cam-outliers", type=float, default=0.0, help="up to this share of camera detections 1-3 cm off")
     p.add_argument("--cam-drops", type=float, default=0.0, help="up to this share of frames lost (and gaps 0.15-0.4 s)")
     p.add_argument("--tilt-bias", type=float, default=0.0, help="std of the arm model's flat error, unit g, per episode")
@@ -82,7 +84,7 @@ def main():
                         home_q=a.home_q, stand_gravity=a.stand_gravity, ball_start=a.ball_start,
                         estimator=a.estimator, act_latency=a.act_latency, arm_dyn=a.arm_dyn,
                         cam_outliers=a.cam_outliers, cam_drops=a.cam_drops, tilt_bias=a.tilt_bias,
-                        stand_gravity2=a.stand_gravity2)
+                        stand_gravity2=a.stand_gravity2, kf_paddle_acc=a.kf_paddle_acc)
     N, T = env.n_envs, a.steps
     ac = ActorCritic(env.obs_dim, env.act_dim, critic_dim=env.full_dim)
     if a.init:

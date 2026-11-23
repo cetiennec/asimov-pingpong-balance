@@ -30,8 +30,9 @@ def episode(args):
     from albert.sim_robot import SIM_STAND_GRAVITY as TAUGHT_GRAVITY  # fixed gantry lean: results stay comparable over time
     from asimov_pp.env import BalanceEnv
     kw = dict(REALISTIC if realistic else {})
-    if ckpt.startswith("mpc") or ckpt.startswith("kfacc:"):  # the MPC's Kalman filter knows the blade's acceleration
-        kw["kf_paddle_acc"] = True
+    from albert.common import uses_paddle_acc
+    if ckpt.startswith("mpc") or ckpt.startswith("kfacc:") or uses_paddle_acc(ckpt):  # the filter knows the blade's acceleration
+        kw["kf_paddle_acc"] = True                                                      # (MPC, or a policy trained with it)
         ckpt = ckpt[6:] if ckpt.startswith("kfacc:") else ckpt
     if arm_dyn and realistic:
         kw["arm_dyn"] = arm_dyn

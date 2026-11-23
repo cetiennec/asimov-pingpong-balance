@@ -23,6 +23,11 @@ G = 9.81
 # Error of the "now" estimate vs the camera at that moment: median 19 mm -> 9 mm. Used by training (env.py) and Albert alike.
 KF_PARAMS = dict(accel_noise=1.5, meas_noise=0.002, damping=0.5, gate=3.0, huber=1.5, roll_gain=0.87, reset_after=3,
                  bias_noise=0.02, bias_init=0.07)
+# With the blade's in-plane acceleration as an input (a_paddle from the arm's forward kinematics, env kf_paddle_acc /
+# ObsBuilder(paddle_acc=True)). Replay of the 10 onboard runs G1-G5 (2026-11-23): "now" error median 5.5 -> 4.1 mm, capped
+# mean 8.2 -> 6.6 mm; a causal second difference does as well as a centred one. The 0.87 above was absorbing the paddle's
+# motion: with it modelled, the ideal 3/5 g fits best (roll_gain 1.0), and a_paddle at x1 (x1.25 within 0.1 mm).
+KF_PARAMS_ACC = dict(KF_PARAMS, roll_gain=1.0)
 
 
 class BallKF:

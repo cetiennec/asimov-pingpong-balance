@@ -35,7 +35,7 @@ import numpy as np
 from albert.ball_camera import CameraModel, ball_on_blade_cov, blade_roi, debug_image, detect, detect_roi
 from albert.common import TAUGHT_GRAVITY, TiltGuard, lean_deg, level_dq, look_at  # noqa: F401
 from albert.common import (graceful_signals, CENTRED_STANCE, STALL_S, allow_link_hiccups, state_age, unique_log, to_balance, take_joints, hand_back, BalanceOnExit, safe_pose, FLAT_HOME_FW, HOME, TiltGuard, ACTION_SCALE, ARM_IDX, ARM_SIGN, CAMERA_LATENCY_S, KD, KP, NECK_PITCH, NECK_PITCH_IDX, NECK_YAW, NECK_YAW_IDX,
-                           PERIOD, WAIST_IDX, Kinematics, ObsBuilder, fw_to_mjcf, load_calibration, mjcf_to_fw)
+                           PERIOD, WAIST_IDX, Kinematics, ObsBuilder, fw_to_mjcf, load_calibration, mjcf_to_fw, uses_paddle_acc)
 from asimov_pp.model import ARM_JOINTS, BLADE_HT, BLADE_R, BALL_R
 from asimov_pp.ppo import load_policy
 
@@ -145,7 +145,9 @@ def main():
         print("controller: MPC", a.mpc or "(defaults)")
     else:
         policy = load_policy(a.ckpt)
-    obs_b = ObsBuilder(kin, paddle_acc=a.controller == "mpc")
+    paddle_acc = a.controller == "mpc" or uses_paddle_acc(a.ckpt)  # the predictor the controller was made with
+    obs_b = ObsBuilder(kin, paddle_acc=paddle_acc)
+    print("ball predictor:", "tilt + paddle acceleration (KF_PARAMS_ACC)" if paddle_acc else "tilt only (KF_PARAMS)")
     gains = {} if a.edge_gains else dict(kp=KP, kd=KD)
     q_lo = np.array([kin.m.jnt_range[kin.m.joint(j).id][0] for j in ARM_JOINTS]) * 0.97
     q_hi = np.array([kin.m.jnt_range[kin.m.joint(j).id][1] for j in ARM_JOINTS]) * 0.97

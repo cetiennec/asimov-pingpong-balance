@@ -197,8 +197,9 @@ class BalanceEnv:
         # bounce stage camera: detection noise (centre, radius) in px; default CAM_CENTRE_PX, CAM_RADIUS_PX
         self.cam_noise_px = (CAM_CENTRE_PX, CAM_RADIUS_PX) if cam_noise_px is None else tuple(cam_noise_px)
         # kf_paddle_acc: the Kalman filter also predicts with the blade's in-plane acceleration from the arm's motion (forward
-        # kinematics in the torso frame, as Albert can compute it from its encoders). Off in training: the policies learnt
-        # with the filter that ignores it. The MPC (albert/mpc.py) moves the blade sideways and needs it.
+        # kinematics in the torso frame, as Albert can compute it from its encoders), with KF_PARAMS_ACC. Off by default: the
+        # policies up to albert_v3_final learnt with the filter that ignores it (train.py --kf-paddle-acc turns it on).
+        # The MPC (albert/mpc.py) moves the blade sideways and needs it.
         self.kf_paddle_acc = kf_paddle_acc
         self._pc_hist = []
         self.rest_ends = True  # bounce stage: a ball at rest for 0.5 s ends the episode (evaluation may switch it off)
@@ -210,8 +211,8 @@ class BalanceEnv:
         # extra command delay, in control steps (min, max); default 0..max_latency. Albert's arm lags ~50-65 ms more than the sim's
         self.act_latency = tuple(act_latency) if act_latency is not None else (0, max_latency)
         if estimator == "kf":
-            from asimov_pp.estimator import KF_PARAMS, BallKF
-            self.kf = BallKF(dt=DT, **(KF_PARAMS if kf_params is None else kf_params))
+            from asimov_pp.estimator import KF_PARAMS, KF_PARAMS_ACC, BallKF
+            self.kf = BallKF(dt=DT, **((KF_PARAMS_ACC if kf_paddle_acc else KF_PARAMS) if kf_params is None else kf_params))
         # head camera as measured on Albert (albert_demo.csv): besides the noise below, a share of detections 1-3 cm off
         # (up to cam_outliers), dropped frames and occasional gaps of 0.15-0.4 s; and the arm model's flat off by a few degrees
         self.cam_outliers, self.cam_drops, self.tilt_bias = cam_outliers, cam_drops, tilt_bias
