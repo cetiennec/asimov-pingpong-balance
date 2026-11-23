@@ -357,3 +357,17 @@ def load_controller(spec: str):
         return MPCController(spec[4:] if spec.startswith("mpc:") else None)
     from asimov_pp.ppo import load_policy
     return load_policy(spec)
+
+
+if __name__ == "__main__":  # timing only, sends nothing to the robot: albert/onboard.sh albert.mpc
+    import time
+    ctl, rng, ts = MPCController(), np.random.default_rng(0), []
+    ctl.reset()
+    for _ in range(1000):
+        obs = rng.normal(0.0, 0.1, 40).astype(np.float32)
+        t0 = time.perf_counter()
+        ctl(obs)
+        ts.append(time.perf_counter() - t0)
+    ms = np.array(ts[50:]) * 1e3
+    print(f"MPC step: median {np.median(ms):.2f} ms, p99 {np.percentile(ms, 99):.2f} ms, max {ms.max():.2f} ms "
+          f"(control period {1e3 * 0.02:.0f} ms; nothing was sent to the robot)")
