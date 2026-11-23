@@ -360,14 +360,25 @@ def load_controller(spec: str):
 
 
 if __name__ == "__main__":  # timing only, sends nothing to the robot: albert/onboard.sh albert.mpc
+    import os
     import time
-    ctl, rng, ts = MPCController(), np.random.default_rng(0), []
-    ctl.reset()
-    for _ in range(1000):
-        obs = rng.normal(0.0, 0.1, 40).astype(np.float32)
-        t0 = time.perf_counter()
-        ctl(obs)
-        ts.append(time.perf_counter() - t0)
-    ms = np.array(ts[50:]) * 1e3
-    print(f"MPC step: median {np.median(ms):.2f} ms, p99 {np.percentile(ms, 99):.2f} ms, max {ms.max():.2f} ms "
-          f"(control period {1e3 * 0.02:.0f} ms; nothing was sent to the robot)")
+
+    def bench(name, ctl, n=1000):
+        rng, ts = np.random.default_rng(0), []
+        for _ in range(n):
+            obs = rng.normal(0.0, 0.1, 40).astype(np.float32)
+            t0, c0 = time.perf_counter(), time.process_time()
+            ctl(obs)
+            ts.append((time.perf_counter() - t0, time.process_time() - c0))
+        ms = np.array(ts[50:]) * 1e3
+        print(f"{name:9} step: median {np.median(ms[:, 0]):.2f} ms, p99 {np.percentile(ms[:, 0], 99):.2f} ms, "
+              f"max {ms[:, 0].max():.2f} ms, CPU {ms[:, 1].mean():.2f} ms = {ms[:, 1].mean() / 20 * 100:.1f} % of one core at 50 Hz")
+
+    mpc = MPCController()
+    mpc.reset()
+    bench("MPC", mpc)
+    ckpt = "outputs/albert_v3_final/best.pt"
+    if os.path.exists(ckpt):
+        from asimov_pp.ppo import load_policy
+        bench("v3_final", load_policy(ckpt))
+    print("control period 20 ms; nothing was sent to the robot")
