@@ -9,7 +9,7 @@ PI=${ALBERT_PI:-albert@albert.local}
 ASIMOV_DIR=${ASIMOV_DIR:-../supermimic_ws/asimov-1}
 ssh -o BatchMode=yes "$PI" "mkdir -p asimov-pingpong-balance/outputs asimov-pingpong-balance/logs supermimic_ws/asimov-1"
 rsync -az -e "ssh -o BatchMode=yes" "$ASIMOV_DIR/sim-model" "$PI:supermimic_ws/asimov-1/"
-rsync -az -e "ssh -o BatchMode=yes" --exclude "__pycache__" albert asimov_pp hardware assets pyproject.toml "$PI:asimov-pingpong-balance/"
+rsync -az -e "ssh -o BatchMode=yes" --exclude "__pycache__" $(ls -d albert asimov_pp hardware assets pyproject.toml 2>/dev/null) "$PI:asimov-pingpong-balance/"
 rsync -az -e "ssh -o BatchMode=yes" $(ls -d outputs/albert_v3_final outputs/albert_v4 outputs/albert_v2A 2>/dev/null) "$PI:asimov-pingpong-balance/outputs/"
 ssh -o BatchMode=yes "$PI" 'cd asimov-pingpong-balance && [ -d .venv ] || python3 -m venv .venv
   .venv/bin/pip install -q --upgrade pip
