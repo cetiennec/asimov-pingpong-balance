@@ -1,6 +1,69 @@
 {
-  "_doc": "Faces the detector misses (cut off by the image edge, seen from above), found by looking at the blurred export. Per run: [first camera frame, last camera frame, [x, y, w, h]] in the 640x360 camera image; the area is blurred as an ellipse filling the box.",
-  "G3_v3": [[360, 406, [0, 60, 110, 300]]],
-  "G3_v3_2": [[535, 573, [440, 0, 200, 360]], [1063, 1143, [0, 0, 130, 260]]],
-  "G5_v4": [[54, 86, [180, 80, 220, 220]], [850, 886, [430, 0, 210, 150]]]
+ "_doc": "Faces the detector misses (cut off by the image edge, seen from above), found by looking at the blurred export. Per run: [first camera frame, last camera frame, [x, y, w, h]] in the 640x360 camera image; the area is blurred as an ellipse filling the box.",
+ "G3_v3": [
+  [
+   360,
+   406,
+   [
+    0,
+    60,
+    110,
+    300
+   ]
+  ]
+ ],
+ "G3_v3_2": [
+  [
+   535,
+   573,
+   [
+    440,
+    0,
+    200,
+    360
+   ]
+  ],
+  [
+   1063,
+   1143,
+   [
+    0,
+    0,
+    130,
+    260
+   ]
+  ]
+ ],
+ "G5_v4": [
+  [
+   54,
+   86,
+   [
+    180,
+    80,
+    220,
+    220
+   ]
+  ],
+  [
+   850,
+   886,
+   [
+    430,
+    0,
+    210,
+    150
+   ]
+  ],
+  [
+   917,
+   963,
+   [
+    320,
+    110,
+    260,
+    240
+   ]
+  ]
+ ]
 }

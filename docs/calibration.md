@@ -80,6 +80,8 @@ head looks at it; put the ball on each spot when asked and press Enter. The scri
 then checks itself on every spot: **~3 mm mean error** is good. Look at `albert/calibration_mask.png`: blue is where the
 blade is searched, white the ball's colour, a red cross the detection; the ball must be the only white blob.
 
+![Camera calibration on Albert: the ball on a marked spot (left), what the detector sees (right)](images/calibrate_camera.png)
+
 A fall usually shifts the camera or the neck's zero. If the camera no longer sees the paddle at all, set the neck's zero
 again in Asimov Manager first, then run this step.
 
@@ -91,6 +93,8 @@ python -m albert.aim_sweep --supported
 
 The neck sweeps a 4 x 3 grid; `logs/aim_sweep.png` shows each view with the blade outlined, and the script prints where the
 blade is best seen next to the neck angles the run uses. No ball.
+
+![The neck sweep on Albert: the blade (blue) is best seen at yaw -0.35 to -0.65, pitch -0.30 to -0.46](images/aim_sweep.png)
 
 ## 7. Camera latency
 

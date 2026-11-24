@@ -33,22 +33,28 @@ hand, using only its head camera. Print a holder, calibrate, run one command.
 - The **paddle holder**, 3D-printed from [`hardware/paddle_holder.stl`](hardware/paddle_holder.stl): PETG, PLA+ or PA12,
   lying on its flat face, 6 walls or 100 % infill. It plugs into the right wrist cup, held by 4 x M4 x 10 screws through the
   cup's threads; the paddle's handle is held with 3 zip ties (4.8 mm) over a 1-2 mm rubber strip.
-- A computer with Python 3.12 and [uv](https://docs.astral.sh/uv/) (macOS or Linux), or the robot's own computer.
+- A **Mac** (Apple silicon or Intel; Linux works too) on the robot's Wi-Fi, with [uv](https://docs.astral.sh/uv/)
+  (`brew install uv`). uv installs Python 3.12 and everything else.
 
-## Quick start (5 minutes, no robot)
+## Quick start on your Mac (5 minutes, no robot)
 
 ```bash
-hf download cetiennec/asimov-pingpong-balance --local-dir asimov-pingpong && cd asimov-pingpong   # pip install huggingface_hub
-uv sync --extra albert
+uvx --from huggingface_hub hf download cetiennec/asimov-pingpong-balance --local-dir asimov-pingpong && cd asimov-pingpong
+uv sync --extra albert                                     # about 1 minute
 tools/get_asimov_model.sh                                  # Menlo's robot model, next to this folder
-uv run python -m albert.run_policy --sim --hand --duration 30
+uv run python -m albert.run_policy --sim --hand --duration 60 --video demo.mp4
+open demo.mp4
 ```
 
-The last command runs the whole pipeline on a simulated Albert: rendered head camera, ball detector, ball predictor, policy,
-arm. `--hand` puts the ball back when it falls.
+This runs the whole pipeline on a simulated Albert: rendered head camera, ball detector, ball predictor, policy, arm.
+`--hand` puts the ball back when it falls, rolling, the way a person would; expect a few drops at first, then long catches
+(about 50 s of balancing in 60 s). `demo.mp4` shows the run from outside and through the head camera.
 
-## On your robot
+## On your robot, from your Mac
 
+0. **Connect.** Run `uv run menlo setup` once to save your robot. In Asimov Manager → Asimov Edge parameters, set
+   **`udp-state-host` to your Mac's IP address**: the robot streams its joint states to one computer only. Check with
+   `uv run python -m albert.status` (read-only: mode, faults, temperatures, and a photo from the head camera).
 1. **Mount the paddle.** Print the holder, plug it into the right wrist cup, screw it in, zip-tie the paddle, red side up.
 2. **Calibrate** (about 30 minutes the first time, 5 after a fall): flat pose, camera, latency.
    Step by step: **[docs/calibration.md](docs/calibration.md)**.
@@ -61,9 +67,10 @@ arm. `--hand` puts the ball back when it falls.
    controller.
 4. **Standing on its own.** Leave out `--gantry`: the legs are held in a stance that keeps the robot upright under joint
    control. Start with the rope taut and lower it until slack when the script asks.
-5. **Run it on the robot's computer** for steadier timing: `ALBERT_PI=user@robot.local albert/onboard.sh albert.run_policy
-   --supported --gantry --duration 60 --log logs/P1.csv` copies the code over, runs it there and brings the logs back
-   ([`albert/ONBOARD.md`](albert/ONBOARD.md)).
+
+Everything runs on the Mac: the camera stream and the joint states come over Wi-Fi, the arm targets go back at 50 Hz.
+For steadier timing you can later run the same scripts on the robot's own computer, started from the Mac
+([`albert/ONBOARD.md`](albert/ONBOARD.md)).
 
 Each run writes a log (`logs/<name>.csv`, 50 Hz), the camera detections, the robot recording and the raw head camera.
 `uv run python -m tools.session_stats logs/first.csv` sums it up.
