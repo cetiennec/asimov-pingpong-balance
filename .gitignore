@@ -24,3 +24,9 @@ outputs/*
 outputs/**/last.pt
 data/lerobot/
 .cache/
+# local calibration backups and status snapshots (images may show people)
+albert/*_20[0-9][0-9][01][0-9][0-3][0-9]*.json
+albert/camera_calibration_before_*.json
+albert/camera_calibration_rejected.json
+albert/calibration_view.png
+albert/status_*.png

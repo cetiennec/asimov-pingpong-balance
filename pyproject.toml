@@ -3,7 +3,7 @@ name = "asimov-pingpong-balance"
 version = "0.1.0"
 description = "Asimov 1 balances a ping-pong ball on a paddle: holder, MuJoCo env, PPO curriculum, and a menlo-sdk runner for the real robot"
 authors = [
-    { name = "cetiennec", email = "cetiennec@proton.me" }
+    { name = "cetiennec" }
 ]
 requires-python = ">=3.12"
 dependencies = [
