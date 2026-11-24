@@ -73,9 +73,13 @@ of the image are still uncovered.
 python -m albert.calibrate_camera --supported
 ```
 
-Print [`albert/calibration_spots_A4.pdf`](../albert/calibration_spots_A4.pdf) at 100 % and mark its 9 spots on the paddle's
-rubber with a pen: the centre, 4 cm towards the tip, the handle, left and right, and the four diagonals
-([`albert/calibration_spots.png`](../albert/calibration_spots.png) shows the numbering). The arm levels the blade and the
+Print the stencil [`albert/calibration_spots_A4.pdf`](../albert/calibration_spots_A4.pdf) at 100 % (its scale bar must
+measure exactly 10 cm). Cut along the red disc, lay it on the red face with the long line on the handle's axis and spot 1
+on the blade's centre, prick each of the 9 spots through with a pen, then remove the paper: spot 1 at the centre, 2 and 3
+4 cm towards the tip and the handle, 4 and 5 4 cm to each side, 6-9 on the diagonals (3 cm, 3 cm).
+
+<img src="../albert/calibration_spots_A4.png" width="260" alt="The camera-calibration stencil">
+ The arm levels the blade and the
 head looks at it; put the ball on each spot when asked and press Enter. The script fits the camera's pose and focal length,
 then checks itself on every spot: **~3 mm mean error** is good. Look at `albert/calibration_mask.png`: blue is where the
 blade is searched, white the ball's colour, a red cross the detection; the ball must be the only white blob.

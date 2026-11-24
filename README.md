@@ -30,6 +30,9 @@ hand, using only its head camera. Print a holder, calibrate, run one command.
 
 - An **Asimov 1** with menlo-sdk set up (`menlo setup`), and a **gantry** or a rope to hang it from for the first runs.
 - A **table-tennis paddle** with red rubber and a **white 40 mm ping-pong ball**.
+- Two printouts for the calibration (A4, at 100 %): the **camera-calibration stencil**
+  [`albert/calibration_spots_A4.pdf`](albert/calibration_spots_A4.pdf) (9 spots to mark on the paddle) and, optionally,
+  the **checkerboard** [`data/checkerboard_9x6.png`](data/checkerboard_9x6.png).
 - The **paddle holder**, 3D-printed from [`hardware/paddle_holder.stl`](hardware/paddle_holder.stl): PETG, PLA+ or PA12,
   lying on its flat face, 6 walls or 100 % infill. It plugs into the right wrist cup, held by 4 x M4 x 10 screws through the
   cup's threads; the paddle's handle is held with 3 zip ties (4.8 mm) over a 1-2 mm rubber strip.
