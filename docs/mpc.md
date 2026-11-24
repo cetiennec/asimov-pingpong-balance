@@ -2,7 +2,7 @@
 
 A model-predictive controller as an alternative to the PPO policy: same inputs (the 40-value observation: Kalman ball
 estimate, blade gravity, IMU, arm joints), same output (5 joint-target deltas x 0.03 rad), 50 Hz. Code:
-[`albert/mpc.py`](../albert/mpc.py). **Never run on Albert yet.**
+[`albert/mpc.py`](../albert/mpc.py). On Albert since 2026-11-23: 56.9 s of 60 on the gantry (M1_mpc), 59.8 s in one catch (F1_mpc_2).
 
 ```
 python -m tools.eval_albert outputs/albert_v3_final/best.pt mpc                    # robot-matched sim, 2026-11-22 arm

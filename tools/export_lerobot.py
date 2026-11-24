@@ -22,6 +22,7 @@ and each doubtful detection left sharp), to look at before pushing. A --video da
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import glob
 import json
 import os
@@ -34,6 +35,15 @@ FW_JOINTS = ("L_Hip_Pitch", "L_Hip_Roll", "L_Hip_Yaw", "L_Knee", "L_Ankle_A", "L
              "R_Shoulder_Pitch", "R_Shoulder_Roll", "R_Shoulder_Yaw", "R_Elbow", "R_Wrist_Yaw", "Waist_Yaw", "Neck_Yaw", "Neck_Pitch")
 ARM = [17, 18, 19, 20, 21]
 TASK = "Balance the ping-pong ball on the paddle"
+
+
+def run_task(name):
+    """The episode's task string, with the controller read from the run's name (run_policy logs are named <session>_<ctl>):
+    _v3 = albert_v3_final, _v4 = albert_v4, mpc = the MPC (albert/mpc.py); disturbance_* runs were pushed by hand."""
+    n = name.lower()
+    ctl = "MPC" if "mpc" in n else "policy albert_v4" if "_v4" in n else "policy albert_v3_final" if "_v3" in n else None
+    task = TASK + (f", {ctl}" if ctl else "")
+    return task + (", disturbed by hand" if n.startswith("disturbance") else "")
 
 
 def load_recording(path):
@@ -100,7 +110,7 @@ class CameraFrames:
         return self.img if want >= 0 else None
 
 
-def episodes(roots, video=False):
+def episodes(roots, video=False, exclude=()):
     import sys
     sys.path.insert(0, os.getcwd())
     from albert.common import mjcf_to_fw
@@ -108,6 +118,8 @@ def episodes(roots, video=False):
     for csv in sorted(sum((glob.glob(os.path.join(r, "*.csv")) for r in roots), [])):
         key = (os.path.basename(csv), os.path.getsize(csv))
         if csv.endswith(("_frames.csv", "_camera.csv")) or key in seen:
+            continue
+        if any(fnmatch.fnmatch(os.path.basename(csv)[:-4], x) for x in exclude):
             continue
         rec = csv[:-4] + ".jsonl"
         cam = csv[:-4] + "_camera.mp4"
@@ -148,6 +160,7 @@ def main():
     p.add_argument("--video", action="store_true", help="with the head camera: only runs that recorded <log>_camera.mp4")
     p.add_argument("--push", default=None, help="Hugging Face dataset repo id to push to")
     p.add_argument("--public", action="store_true", help="--video --push: make it public (the frames show people)")
+    p.add_argument("--exclude", nargs="*", default=[], help="run names to leave out (glob, e.g. 'B*_bounce*')")
     p.add_argument("--no-blur", action="store_true", help="--video: keep the faces (the dataset then stays local or private)")
     p.add_argument("--face-score", type=float, default=None, help="--video: a face track needs one detection this sure "
                    "(default: tools/face_blur.STRONG); lower it when the report shows faces left sharp")
@@ -164,7 +177,7 @@ def main():
         "action.arm_target": {"dtype": "float32", "shape": (5,), "names": [FW_JOINTS[i] for i in ARM]},
         "balancing": {"dtype": "float32", "shape": (1,), "names": ["balancing"]},
     }
-    eps = list(episodes(a.data, video=a.video))
+    eps = list(episodes(a.data, video=a.video, exclude=a.exclude))
     if not eps:
         raise SystemExit("no run with a robot recording" + (" and a camera recording" if a.video else "") + f" in {a.data}")
     if a.video and not a.no_blur:
@@ -188,7 +201,7 @@ def main():
         for k in range(n):
             fr = {"observation.state": e["state"][k].astype(np.float32), "observation.ball": e["ball"][k].astype(np.float32),
                   "action": e["action"][k].astype(np.float32), "action.arm_target": e["target"][k].astype(np.float32),
-                  "balancing": e["balancing"][k:k + 1].astype(np.float32), "task": TASK}
+                  "balancing": e["balancing"][k:k + 1].astype(np.float32), "task": run_task(name)}
             if a.video:
                 img = cam.at(e["t_state"][k])
                 if img is None:  # before the first frame arrived: the first frame (steps before the camera started)

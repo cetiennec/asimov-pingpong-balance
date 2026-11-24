@@ -12,7 +12,7 @@ DIR=asimov-pingpong-balance
 # code and calibrations both ways, the newer file wins (-u): a calibration made on either side is kept; never the Pi's logs
 rsync -azu -e "ssh -o BatchMode=yes" "$PI:$DIR/albert/*.json" albert/ 2>/dev/null || true
 rsync -azu -e "ssh -o BatchMode=yes" --exclude "__pycache__" --exclude "logs" albert asimov_pp "$PI:$DIR/"
-rsync -az -e "ssh -o BatchMode=yes" --exclude "*.pt.tmp" outputs/albert_v3_final outputs/albert_v2A "$PI:$DIR/outputs/" 2>/dev/null || true
+rsync -az -e "ssh -o BatchMode=yes" --exclude "*.pt.tmp" $(ls -d outputs/albert_v3_final outputs/albert_v4 outputs/albert_v2A 2>/dev/null) "$PI:$DIR/outputs/" 2>/dev/null || true
 MOD=$1; shift
 ssh -t "$PI" "cd $DIR && OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 .venv/bin/python -u -m $MOD $*" || true
 mkdir -p logs/onboard

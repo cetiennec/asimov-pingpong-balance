@@ -46,7 +46,7 @@ ball on; it starts by itself and waits again when the ball is lost. Each run wri
 Every run with a camera recording can be exported to the local LeRobot dataset `data/lerobot/asimov-pingpong-albert-camera`
 with face blur (minutes, so not after each run): `python -c 'from tools.export_lerobot import export_after_run;
 export_after_run()'` on any Mac with the logs, or `--lerobot` (Mac runs) / `ALBERT_EXPORT=1 albert/onboard.sh ...` (Pi runs). The camera frames show the
-room and the people in it: they stay local.
+room and the people in it: faces are blurred before anything is pushed; the public dataset is [cetiennec/asimov-pingpong-albert](https://huggingface.co/datasets/cetiennec/asimov-pingpong-albert).
 
 After a run: `python -m tools.session_stats <log>.csv`, `python -m tools.tune_kf <log>.csv` (predictor on real data).
 

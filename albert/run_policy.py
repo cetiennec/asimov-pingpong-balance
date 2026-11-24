@@ -59,7 +59,7 @@ def main():
                    help="policy (default: v2A, trained on the sim matched to Albert's 2026-11-19 session; the previous one: "
                         "outputs/albert_perturb/best.pt)")
     p.add_argument("--controller", default="policy", choices=("policy", "mpc"),
-                   help="policy: the PPO checkpoint (--ckpt); mpc: the model-predictive controller (albert/mpc.py), SIMULATION-TESTED ONLY")
+                   help="policy: the PPO checkpoint (--ckpt); mpc: the model-predictive controller (albert/mpc.py), run on Albert since 2026-11-23")
     p.add_argument("--mpc", default="", help="--controller mpc: parameters, 'key=value,...' or a JSON file (albert/mpc.py MPCParams)")
     p.add_argument("--sim", action="store_true", help="run on the simulated Albert")
     p.add_argument("--supported", action="store_true", help="confirms Albert hangs from its gantry")
