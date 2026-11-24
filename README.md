@@ -1,13 +1,12 @@
 ---
 license: mit
 tags:
-- reinforcement-learning
 - robotics
 - humanoid
+- reinforcement-learning
+- sim-to-real
 - mujoco
 - ppo
-- model-predictive-control
-- sim-to-real
 - asimov-1
 library_name: pytorch
 pipeline_tag: reinforcement-learning
@@ -15,128 +14,133 @@ datasets:
 - cetiennec/asimov-pingpong-albert
 ---
 
-# Asimov 1: balancing a ping-pong ball on a paddle
+# Ping-pong ball balancing for the Asimov 1
 
-An [Asimov 1](https://github.com/menloresearch/asimov-1) humanoid (Menlo Research, 25 DoF, no gripper) balances a
-ping-pong ball on a table-tennis paddle held in its right wrist, seen only by its own head camera. Everything needed to run
-it on **your** Asimov 1 is here: the code that runs on the robot, two PPO policies trained in MuJoCo, a model-predictive
-controller that needs no training, the paddle holder to 3D-print, and the calibrations. Developed on one robot, "Albert".
+Your [Asimov 1](https://github.com/menloresearch/asimov-1) keeps a ping-pong ball on a table-tennis paddle held in its right
+hand, using only its head camera. Print a holder, calibrate, run one command.
 
-- **Dataset**: Albert's real runs, head camera included (faces blurred):
-  [cetiennec/asimov-pingpong-albert](https://huggingface.co/datasets/cetiennec/asimov-pingpong-albert)
-- **Try it in the browser**: [spaces/cetiennec/asimov-pingpong-balance](https://huggingface.co/spaces/cetiennec/asimov-pingpong-balance)
+<video src="https://huggingface.co/cetiennec/asimov-pingpong-balance/resolve/main/videos/albert_head_camera.mp4" controls></video>
 
-<video src="https://huggingface.co/cetiennec/asimov-pingpong-balance/resolve/main/videos/5_albert_freestand_sim.mp4" controls></video>
+*What the robot sees: Albert, an Asimov 1, balancing with `albert_v3_final` (57 s of a 60 s run). Faces blurred.*
 
-## On Albert
+**Try it in your browser first**: [the simulator](https://huggingface.co/spaces/cetiennec/asimov-pingpong-balance) ·
+**Real runs** (head camera, joints, actions): [the dataset](https://huggingface.co/datasets/cetiennec/asimov-pingpong-albert)
 
-60 s runs (the ball put back by hand when it falls; the controller waits for it). Balancing = time with the ball on the
-blade under control.
+## What you need
 
-| date | controller | run | balancing in 60 s | longest |
-|---|---|---|---|---|
-| 2026-11-20 | `albert_v2A` | free-standing, gantry rope slack | 57 s | 46 s |
-| 2026-11-22 | `albert_v3_final` | G4_v3 | 57.2 s | 56.3 s |
-| 2026-11-22 | `albert_v4` | G5_v4 | 45.5 s | 31.3 s |
-| 2026-11-23 | MPC | M1_mpc, gantry | 56.9 s | 55.6 s |
-| 2026-11-23 | MPC | F1_mpc_2 | 59.8 s | 59.8 s |
+- An **Asimov 1** with menlo-sdk set up (`menlo setup`), and a **gantry** or a rope to hang it from for the first runs.
+- A **table-tennis paddle** with red rubber and a **white 40 mm ping-pong ball**.
+- The **paddle holder**, 3D-printed from [`hardware/paddle_holder.stl`](hardware/paddle_holder.stl): PETG, PLA+ or PA12,
+  lying on its flat face, 6 walls or 100 % infill. It plugs into the right wrist cup, held by 4 x M4 x 10 screws through the
+  cup's threads; the paddle's handle is held with 3 zip ties (4.8 mm) over a 1-2 mm rubber strip.
+- A computer with Python 3.12 and [uv](https://docs.astral.sh/uv/) (macOS or Linux), or the robot's own computer.
 
-Every run with the head camera is in the dataset; runs vary a lot with the calibration of the day (see Limitations).
+## Quick start (5 minutes, no robot)
+
+```bash
+hf download cetiennec/asimov-pingpong-balance --local-dir asimov-pingpong && cd asimov-pingpong   # pip install huggingface_hub
+uv sync --extra albert
+tools/get_asimov_model.sh                                  # Menlo's robot model, next to this folder
+uv run python -m albert.run_policy --sim --hand --duration 30
+```
+
+The last command runs the whole pipeline on a simulated Albert: rendered head camera, ball detector, ball predictor, policy,
+arm. `--hand` puts the ball back when it falls.
+
+## On your robot
+
+1. **Mount the paddle.** Print the holder, plug it into the right wrist cup, screw it in, zip-tie the paddle, red side up.
+2. **Calibrate** (about 30 minutes the first time, 5 after a fall): flat pose, camera, latency.
+   Step by step: **[docs/calibration.md](docs/calibration.md)**.
+3. **First run, hanging from the gantry** (rope taut, E-Stop in reach):
+   ```bash
+   uv run python -m albert.run_policy --supported --gantry --duration 60 --log logs/first.csv
+   ```
+   The arm goes to its starting pose, the head looks at the paddle and the blade is levelled. **Put the ball on the blade**:
+   balancing starts by itself and waits again whenever the ball falls. At the end the robot is handed back to Menlo's balance
+   controller.
+4. **Standing on its own.** Leave out `--gantry`: the legs are held in a stance that keeps the robot upright under joint
+   control. Start with the rope taut and lower it until slack when the script asks.
+5. **Run it on the robot's computer** for steadier timing: `ALBERT_PI=user@robot.local albert/onboard.sh albert.run_policy
+   --supported --gantry --duration 60 --log logs/P1.csv` copies the code over, runs it there and brings the logs back
+   ([`albert/ONBOARD.md`](albert/ONBOARD.md)).
+
+Each run writes a log (`logs/<name>.csv`, 50 Hz), the camera detections, the robot recording and the raw head camera.
+`uv run python -m tools.session_stats logs/first.csv` sums it up.
+
+**Safety, built in.** The robot is never left limp: on a normal end, Ctrl+C, an error, a dropped ssh session or a lean beyond
+the watchdog's limit, the arm glides to its rest pose and the robot is handed to Menlo's balance controller. Scripts that
+wait for you keep the robot's setpoints alive.
 
 ## Controllers
 
-| | what | use |
-|---|---|---|
-| **`outputs/albert_v3_final`** | PPO, 2 x 256 MLP, trained on a sim matched to Albert (identified arm, real camera noise and latency), across the gantry's and the free-standing lean, with pushes, ball flicks and paddle shoves | default: `--ckpt outputs/albert_v3_final/best.pt` |
-| `outputs/albert_v4` | v3_final fine-tuned on the arm as identified on 2026-11-22 | `--ckpt outputs/albert_v4/best.pt` |
-| `outputs/albert_v2A` | the previous policy (57 s free-standing on 2026-11-20); `train_albert.sh` starts from it | `--ckpt outputs/albert_v2A/best.pt` |
-| MPC ([`albert/mpc.py`](albert/mpc.py)) | per blade axis: ball rolling on a tilted and translating blade, arm lag and command delay; a box-constrained QP every 20 ms (~0.3 ms, numpy). No training; smoother than the policies on Albert. [`docs/mpc.md`](docs/mpc.md) | `--controller mpc` |
+| | |
+|---|---|
+| **`albert_v3_final`** (default) | PPO policy trained in a simulation matched to Albert: its measured arm, its camera's noise and latency, leaning on the gantry or standing, with pushes, flicks and shoves |
+| `albert_v4` | the same, fine-tuned on Albert's arm as measured on 2026-11-22: `--ckpt outputs/albert_v4/best.pt` |
+| MPC | a model-predictive controller, no training: often smoother on a real arm, worth a try if the paddle oscillates. `--controller mpc` ([how it works](docs/mpc.md)) |
 
-All three take the same 40-value observation and give 5 right-arm joint-target increments (x 0.03 rad) at 50 Hz.
+On Albert (60 s runs, the ball put back by hand after a fall):
 
-```python
-from asimov_pp.ppo import load_policy
-policy = load_policy("outputs/albert_v3_final/best.pt")   # numpy inference, ~7 us per call
-action = policy(obs)                                       # obs: 40 floats -> 5 floats in [-1, 1]
-```
+| date | controller | balancing in 60 s | longest catch |
+|---|---|---|---|
+| 2026-11-20 | `albert_v2A`, standing on its own | 57 s | 46 s |
+| 2026-11-22 | `albert_v3_final` | 57.2 s | 56.3 s |
+| 2026-11-22 | `albert_v4` | 45.5 s | 31.3 s |
+| 2026-11-23 | MPC, on the gantry | 56.9 s | 55.6 s |
+| 2026-11-23 | MPC | 59.8 s | 59.8 s |
 
-## Run it on your Asimov 1
-
-**You need**: an Asimov 1 with menlo-sdk set up (`menlo setup`), a gantry or a rope to hang it from (strongly advised for the
-first runs), a table-tennis paddle with red rubber, a white 40 mm ping-pong ball, and the paddle holder printed from
-[`hardware/paddle_holder.stl`](hardware/paddle_holder.stl) (bolted to the right wrist cup). Keep the E-Stop in reach.
-
-```bash
-uv sync --extra albert
-tools/get_asimov_model.sh                  # Menlo's MJCF and meshes, next to this folder (used for the arm model)
-```
-
-1. **Calibrate your robot.** The `albert/*.json` files are Albert's: yours will differ. Joint directions, arm offsets and
-   flat pose, head-camera lens and pose, camera latency, arm dynamics: the commands and what a good result looks like are in
-   [`albert/README.md`](albert/README.md#calibrations-after-a-fall-or-a-hardware-change). Redo the camera ones after a fall.
-2. **First run, hanging from the gantry** (rope taut):
-   ```bash
-   python -m albert.run_policy --supported --gantry --duration 60 --log logs/first.csv
-   python -m albert.run_policy --supported --gantry --duration 60 --controller mpc --log logs/first_mpc.csv
-   ```
-   The arm goes to its home pose and the blade is levelled for the robot's actual lean; put the ball on the blade, it starts
-   by itself and waits again when the ball falls.
-3. **Free-standing** (no `--gantry`): the legs are held stiff in a centred stance (Menlo's own stand pose tips over under
-   joint control); take over with the rope taut, lower it until slack when asked.
-4. **On the robot's own computer** (better timing than over Wi-Fi): `ALBERT_PI=user@host albert/onboard.sh albert.run_policy
-   --supported --gantry --duration 60 --log logs/P1.csv` syncs the code, runs it over ssh and copies the logs back
-   ([`albert/ONBOARD.md`](albert/ONBOARD.md)).
-
-**Safety, in every script**: the robot is never left limp. On a normal end, Ctrl+C, an error, a dropped ssh session or the
-lean watchdog (every 20 ms), the arm glides to Menlo's rest pose and the robot is handed back to Menlo's balance controller
-(`stand()` then `balance()`). No prompt waits without keeping the setpoints alive.
+Results depend a lot on the calibration of the day: the same policy kept the ball 6 to 57 s on the same afternoon.
 
 ## Without a robot
 
 ```bash
-python -m albert.run_policy --sim --hand --duration 30                  # the whole pipeline on a simulated Albert (camera rendered)
-python -m albert.run_policy --sim --freestand --truth-ball              # standing without support, simulated
-python -m tools.eval_albert outputs/albert_v3_final/best.pt mpc         # robot-matched evaluation, policy vs MPC
+uv run python -m albert.run_policy --sim --hand --duration 30               # the full pipeline, simulated
+uv run python -m albert.run_policy --sim --freestand --truth-ball           # standing without support
+uv run python -m tools.eval_albert outputs/albert_v3_final/best.pt mpc      # success rates in the robot-matched sim
+```
+
+Use a policy in your own code:
+
+```python
+from asimov_pp.ppo import load_policy
+policy = load_policy("outputs/albert_v3_final/best.pt")   # numpy, ~7 us per call
+action = policy(obs)   # 40 observations (ball on the blade, gravity, gyro, arm joints, last actions) -> 5 arm joint steps
 ```
 
 ## How it works
 
 ```
-head camera (1280x720, ~22 fps) --> ball detector (white ball on the red blade, searched only around the blade)
-                                         |  ray from the calibrated camera, intersected with the blade plane (arm model + IMU)
-joints + IMU (200 Hz) ----> arm model --> Kalman predictor: replays each frame at its capture time (~105 ms old), predicts
-                                         |  the ball NOW from the blade's tilt and motion, down-weights outliers
-                                         v
-                    policy or MPC --> right-arm joint targets, 50 Hz --> the robot's motors
+head camera (~22 fps) --> ball detector: white ball on the red blade, in the blade's region only
+                             |  ray from the calibrated camera, intersected with the blade (arm model + IMU)
+joints + IMU (200 Hz) ----> Kalman predictor: each frame replayed at its capture time (~105 ms old);
+                             |  predicts where the ball is now from the blade's tilt and motion
+                             v
+               policy or MPC --> 5 right-arm joint targets, 50 Hz --> motors
 ```
 
-- **Ball detector**: colour thresholds and blob tests, no neural network ([`docs/detector.md`](docs/detector.md)).
-- **Observation (40)**: ball position and velocity on the blade (predictor), gravity in the blade frame, gyro,
-  accelerometer, arm angles and velocities, gait clock (zeros when standing), last 3 actions.
-- **Sim matched to the robot**: the arm identified on a real session (`tools/sysid_arm.py`: gains, damping, friction,
-  delay), the camera's real noise (jitter, outliers, dropped frames, flat error), the body's lean anywhere between the
-  gantry's 7 deg and free-standing's 12 deg.
-- **Training**: `train_albert.sh`, the recipe of `albert_v3_final` (warm-started from `outputs/albert_v2A`; needs the MJCF
-  above; CPU only, ~1 h on 32 cores).
+The policies were trained with PPO in MuJoCo on a curriculum (balance, then disturbances), in a simulation matched to the
+real robot: the arm's delay, gains and friction identified on Albert, the camera's jitter, outliers and dropped frames,
+and the body's lean on the gantry and standing. To retrain, see `train_albert.sh` (CPU only, about 1 h on 32 cores).
 
-## Repository
+## Files
 
 | | |
 |---|---|
-| `albert/` | the real robot through menlo-sdk: `run_policy.py`, `mpc.py`, calibrations, free-standing (`stand_test.py`, `sim_freestand.py`), simulated robot, safety (`common.py`). Guides: `albert/README.md`, `albert/ONBOARD.md` |
-| `asimov_pp/` | MuJoCo model builder, environment (curriculum, domain randomization, camera model), Kalman predictor, PPO |
-| `tools/` | arm identification, predictor tuning, session statistics, robot-matched evaluation, LeRobot export with face blur, a mock robot that runs the real-robot code paths |
-| `hardware/` | paddle holder (`paddle_holder.py` → `.stl`) |
-| `outputs/` | the checkpoints: `best.pt`, `args.json` (exact training arguments), `log.csv`, `train.log` |
-| `docs/` | ball detector, MPC |
+| `albert/` | everything that runs on the robot: `run_policy.py`, the calibrations (`*.json` are Albert's), `onboard.sh`, safety |
+| `asimov_pp/` | the simulation: MuJoCo model, environment, ball predictor, PPO |
+| `outputs/` | the policies: `best.pt`, the training arguments, logs |
+| `hardware/` | the paddle holder (`paddle_holder.stl`, and `paddle_holder.py` to change it) |
+| `docs/` | [calibration](docs/calibration.md), [ball detector](docs/detector.md), [MPC](docs/mpc.md) |
+| `tools/` | robot-matched evaluation, session statistics, arm identification, dataset export |
 
-Not included: Menlo's Asimov 1 MJCF and meshes (`tools/get_asimov_model.sh` fetches them).
+Menlo's robot model is not included: `tools/get_asimov_model.sh` fetches it from
+[menloresearch/asimov-1](https://github.com/menloresearch/asimov-1).
 
 ## Limitations
 
-- No walking with the paddle on the robot: menlo-sdk's joint control switches Menlo's walking policy off for every joint.
-- The camera pose, arm offsets and neck zero shift when the robot falls; recalibrate the camera after any fall.
-- Results depend on the calibrations: the same policy kept the ball 6-57 s in 60 s on Albert on the same day.
-- The simulated body is prescribed (the arm's reaction on the torso is ignored), except in `albert/sim_freestand.py`.
+- No walking while balancing: menlo-sdk's joint control turns Menlo's walking policy off.
+- A fall shifts the camera: recalibrate it (step 5 of the calibration) after any fall.
+- Trained on one robot. If yours differs a lot, identify its arm and retrain (calibration step 8), or use the MPC.
 
-Inspired by [zecice/so101-pingpong-balance](https://github.com/zecice/so101-pingpong-balance) (SO-101 arm).
+Inspired by [zecice/so101-pingpong-balance](https://github.com/zecice/so101-pingpong-balance) (SO-101 arm). MIT license.

@@ -126,24 +126,49 @@ def face_plan(per_frame, width, strong=STRONG, likely=LIKELY, keep=KEEP):
     return blur_at, faces, review
 
 
+MANUAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "face_blur_manual.json")
+
+
+def manual_regions(name, n):
+    """Per camera frame of run `name` (n frames): the areas listed in face_blur_manual.json, as (x, y, w, h, "area")."""
+    import json
+    out = [[] for _ in range(n)]
+    if os.path.exists(MANUAL):
+        for a, b, box in json.load(open(MANUAL)).get(name, []):
+            for i in range(max(0, a), min(n, b + 1)):
+                out[i].append((*box, "area"))
+    return out
+
+
 def blur(rgb, boxes, pad=(0.5, 0.7, 0.5, 0.4)):
-    """A copy of the image with each box grown by pad (left, top, right, bottom, in box sizes: the top for the hair) and
-    turned into ~4 coarse blocks across, then blurred: no feature of the face is left."""
+    """A copy of the image with each face hidden under a soft-edged ellipse. A face box is grown by pad (left, top, right,
+    bottom, in box sizes: the top for the hair); an (x, y, w, h, "area") box is used as it is. Inside the ellipse the image is
+    reduced to ~6 samples across and smoothed (no feature of the face is left), then blended in over a soft edge."""
     import cv2
-    out = np.array(rgb, copy=True)
+    out = np.array(rgb, copy=True).astype(np.float32)
     H, W = out.shape[:2]
-    for x, y, w, h, *_ in boxes:
-        x0, y0 = int(max(0, x - pad[0] * w)), int(max(0, y - pad[1] * h))
-        x1, y1 = int(min(W, x + w * (1 + pad[2]))), int(min(H, y + h * (1 + pad[3])))
+    for box in boxes:
+        x, y, w, h = box[:4]
+        if len(box) > 4 and box[4] == "area":
+            ex0, ey0, ex1, ey1 = x, y, x + w, y + h
+        else:
+            ex0, ey0, ex1, ey1 = x - pad[0] * w, y - pad[1] * h, x + w * (1 + pad[2]), y + h * (1 + pad[3])
+        cx, cy = (ex0 + ex1) / 2, (ey0 + ey1) / 2
+        ax, ay = (ex1 - ex0) / 2 * 1.12, (ey1 - ey0) / 2 * 1.12  # the ellipse covers the box's corners too
+        x0, y0, x1, y1 = int(max(0, cx - ax)), int(max(0, cy - ay)), int(min(W, cx + ax + 1)), int(min(H, cy + ay + 1))
         if x1 - x0 < 2 or y1 - y0 < 2:
             continue
-        cell = max(2, int(min(w, h) / 4))
         roi = out[y0:y1, x0:x1]
-        small = cv2.resize(roi, (max(1, (x1 - x0) // cell), max(1, (y1 - y0) // cell)), interpolation=cv2.INTER_AREA)
-        roi = cv2.resize(small, (x1 - x0, y1 - y0), interpolation=cv2.INTER_NEAREST)
-        k = max(3, (cell * 2) | 1)
-        out[y0:y1, x0:x1] = cv2.GaussianBlur(roi, (k, k), 0)
-    return out
+        n = max(2, int(round(6 * (x1 - x0) / max(2 * ax, 1))))
+        small = cv2.resize(roi, (n, max(2, int(round(n * (y1 - y0) / (x1 - x0))))), interpolation=cv2.INTER_AREA)
+        smooth = cv2.resize(small, (x1 - x0, y1 - y0), interpolation=cv2.INTER_CUBIC)
+        k = max(3, int(0.25 * min(ax, ay)) | 1)
+        smooth = cv2.GaussianBlur(smooth, (k, k), 0)
+        yy, xx = np.mgrid[y0:y1, x0:x1].astype(np.float32)
+        r = np.sqrt(((xx - cx) / ax) ** 2 + ((yy - cy) / ay) ** 2)
+        m = np.clip((1.0 - r) / 0.15, 0.0, 1.0)[..., None]  # 1 inside, soft over the outer 15 %
+        out[y0:y1, x0:x1] = m * smooth + (1 - m) * roi
+    return np.clip(out, 0, 255).astype(np.uint8)
 
 
 def _frames(mp4, crop=None):

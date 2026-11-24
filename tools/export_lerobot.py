@@ -233,6 +233,8 @@ def faces_check(eps, out, strong=None):
         cam = e["camera"]
         per = [finder.faces(img) for img in fb._frames(cam.mp4)]
         blur_at, faces, weak = fb.face_plan(per, cam.w, strong=strong or fb.STRONG, likely=min(fb.LIKELY, strong or 1))
+        for i, extra in enumerate(fb.manual_regions(name, len(blur_at))):  # faces the detector misses (face_blur_manual.json)
+            blur_at[i] += extra
         cam.blur_at = blur_at
         rows.append(fb.report_line(name, len(per), blur_at, faces, weak))
         sheet = fb.review(cam.mp4, name, blur_at, faces, weak, rep_dir)
